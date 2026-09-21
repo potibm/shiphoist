@@ -8,6 +8,14 @@ import (
 	"github.com/potibm/shiphoist/internal/core"
 )
 
+const (
+	scoreMajor = 4
+	scoreMinor = 3
+	scorePatch = 2
+	scoreNone  = 1
+	scoreOther = 0
+)
+
 type HuhPrompter struct{}
 
 func NewHuhPrompter() *HuhPrompter {
@@ -69,14 +77,14 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 func scoreUpdateType(t core.UpdateType) int {
 	switch t {
 	case core.UpdateTypeMajor:
-		return 4
+		return scoreMajor
 	case core.UpdateTypeMinor:
-		return 3
+		return scoreMinor
 	case core.UpdateTypePatch:
-		return 2
+		return scorePatch
 	case core.UpdateTypeNone: // z.B. reiner Digest-Pin
-		return 1
+		return scoreNone
 	default:
-		return 0
+		return scoreOther
 	}
 }

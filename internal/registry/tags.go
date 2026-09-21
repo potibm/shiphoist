@@ -62,16 +62,9 @@ func ParseTag(raw string) (Tag, error) {
 
 	suffix := ""
 
-	if !isJEP223 {
-		dashIndex := strings.Index(raw, "-")
-		if dashIndex != -1 {
-			suffix = raw[dashIndex:]
-		}
-	} else {
-		dashIndex := strings.Index(raw, "-")
-		if dashIndex != -1 {
-			suffix = raw[dashIndex:]
-		}
+	dashIndex := strings.Index(raw, "-")
+	if dashIndex != -1 {
+		suffix = raw[dashIndex:]
 	}
 
 	baseSuffix := suffix
@@ -88,19 +81,7 @@ func ParseTag(raw string) (Tag, error) {
 		}
 	}
 
-	coreVersion := strings.TrimPrefix(strings.TrimSuffix(raw, suffix), "v")
-	if isJEP223 {
-		if m := jep223Pattern.FindStringSubmatch(raw); m != nil {
-			coreVersion = m[1]
-			if m[2] != "" {
-				coreVersion += "." + m[2]
-			}
-
-			if m[3] != "" {
-				coreVersion += "." + m[3]
-			}
-		}
-	}
+	coreVersion := extractCoreVersion(raw, suffix, isJEP223)
 
 	precision := strings.Count(coreVersion, ".") + 1
 	hasVPrefix := strings.HasPrefix(raw, "v")
@@ -114,6 +95,28 @@ func ParseTag(raw string) (Tag, error) {
 		Precision:  precision,
 		HasVPrefix: hasVPrefix,
 	}, nil
+}
+
+func extractCoreVersion(raw, suffix string, isJEP223 bool) string {
+	if isJEP223 {
+		m := jep223Pattern.FindStringSubmatch(raw)
+		if m == nil {
+			return strings.TrimPrefix(strings.TrimSuffix(raw, suffix), "v")
+		}
+
+		coreVersion := m[1]
+		if m[2] != "" {
+			coreVersion += "." + m[2]
+		}
+
+		if m[3] != "" {
+			coreVersion += "." + m[3]
+		}
+
+		return coreVersion
+	}
+
+	return strings.TrimPrefix(strings.TrimSuffix(raw, suffix), "v")
 }
 
 // TagList is a slice of Tag structs, allowing custom methods.

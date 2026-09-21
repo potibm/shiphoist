@@ -1,4 +1,3 @@
-// internal/registry/client.go
 package registry
 
 import (

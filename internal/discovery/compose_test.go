@@ -38,7 +38,7 @@ services:
 	tempDir := t.TempDir()
 	tempFile := filepath.Join(tempDir, "docker-compose.yaml")
 
-	err := os.WriteFile(tempFile, []byte(yamlContent), 0o644)
+	err := os.WriteFile(tempFile, []byte(yamlContent), 0o600)
 	if err != nil {
 		t.Fatalf("could not write temp file: %v", err)
 	}

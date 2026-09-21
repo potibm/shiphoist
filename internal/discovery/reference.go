@@ -28,7 +28,9 @@ func ParseImageReference(ref string) (name, tag, digest string) {
 		return name, tag, digest
 	}
 
-	if name, tag, ok = strings.Cut(remaining, ":"); ok { ... }
+	if name, tag, ok := strings.Cut(remaining, ":"); ok {
+		return name, tag, digest
+	}
 
 	name = remaining
 	tag = "latest"

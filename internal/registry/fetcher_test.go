@@ -497,65 +497,60 @@ func TestDefaultFetcher_FetchUpdate_NonSemver_MissingTag(t *testing.T) {
 }
 
 func TestDefaultFetcher_FetchUpdate_JEP223(t *testing.T) {
-	mock := &mockClient{
-		getDigestFn: func(ctx context.Context, ref string) (string, error) {
-			if ref == "eclipse-temurin:17.0.6_10-jre" {
-				return "sha256:old", nil
-			}
-
-			return "sha256:new", nil
-		},
-		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
-			return []string{"17.0.6_10-jre", "17.0.12_8-jre", "17.0.16_7-jre", "21.0.2_13-jre"}, nil
-		},
-	}
-
-	fetcher := NewDefaultFetcher(mock)
-
-	current := core.ImageUpdate{
-		ImageName: "eclipse-temurin",
-		OldTag:    "17.0.6_10-jre",
-	}
-
-	updated, err := fetcher.FetchUpdate(context.Background(), current)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if updated.NewTag != "17.0.16_7-jre" {
-		t.Errorf("expected NewTag to be 17.0.16_7-jre (same-major JEP-223), got %s", updated.NewTag)
-	}
-
-	if !updated.Selected {
-		t.Error("expected Selected to be true")
-	}
-
-	if updated.MajorTag != "21.0.2_13-jre" {
-		t.Errorf("expected MajorTag to be 21.0.2_13-jre, got %s", updated.MajorTag)
-	}
-
-	t.Logf("JEP-223: 17.0.6_10-jre -> %s, major %s", updated.NewTag, updated.MajorTag)
+	testFetchUpdate(t, fetchUpdateTestCase{
+		name:           "JEP-223",
+		imageName:      "eclipse-temurin",
+		oldTag:         "17.0.6_10-jre",
+		oldDigestRef:   "eclipse-temurin:17.0.6_10-jre",
+		tags:           []string{"17.0.6_10-jre", "17.0.12_8-jre", "17.0.16_7-jre", "21.0.2_13-jre"},
+		expectedNewTag: "17.0.16_7-jre",
+		expectedMajor:  "21.0.2_13-jre",
+	})
 }
 
 func TestDefaultFetcher_FetchUpdate_LinuxServer_BuildID(t *testing.T) {
+	testFetchUpdate(t, fetchUpdateTestCase{
+		name:           "LinuxServer BuildID",
+		imageName:      "linuxserver/nextcloud",
+		oldTag:         "25.0.4-ls212",
+		oldDigestRef:   "linuxserver/nextcloud:25.0.4-ls212",
+		tags:           []string{"25.0.4-ls212", "25.0.5-ls215", "25.0.13-ls260", "26.0.0-ls100"},
+		expectedNewTag: "25.0.13-ls260",
+		expectedMajor:  "26.0.0-ls100",
+	})
+}
+
+type fetchUpdateTestCase struct {
+	name           string
+	imageName      string
+	oldTag         string
+	oldDigestRef   string
+	tags           []string
+	expectedNewTag string
+	expectedMajor  string
+}
+
+func testFetchUpdate(t *testing.T, tc fetchUpdateTestCase) {
+	t.Helper()
+
 	mock := &mockClient{
 		getDigestFn: func(ctx context.Context, ref string) (string, error) {
-			if ref == "linuxserver/nextcloud:25.0.4-ls212" {
+			if ref == tc.oldDigestRef {
 				return "sha256:old", nil
 			}
 
 			return "sha256:new", nil
 		},
 		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
-			return []string{"25.0.4-ls212", "25.0.5-ls215", "25.0.13-ls260", "26.0.0-ls100"}, nil
+			return tc.tags, nil
 		},
 	}
 
 	fetcher := NewDefaultFetcher(mock)
 
 	current := core.ImageUpdate{
-		ImageName: "linuxserver/nextcloud",
-		OldTag:    "25.0.4-ls212",
+		ImageName: tc.imageName,
+		OldTag:    tc.oldTag,
 	}
 
 	updated, err := fetcher.FetchUpdate(context.Background(), current)
@@ -563,17 +558,17 @@ func TestDefaultFetcher_FetchUpdate_LinuxServer_BuildID(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if updated.NewTag != "25.0.13-ls260" {
-		t.Errorf("expected NewTag to be 25.0.13-ls260 (highest build ID in same-major), got %s", updated.NewTag)
+	if updated.NewTag != tc.expectedNewTag {
+		t.Errorf("expected NewTag to be %s, got %s", tc.expectedNewTag, updated.NewTag)
 	}
 
 	if !updated.Selected {
 		t.Error("expected Selected to be true")
 	}
 
-	if updated.MajorTag != "26.0.0-ls100" {
-		t.Errorf("expected MajorTag to be 26.0.0-ls100, got %s", updated.MajorTag)
+	if updated.MajorTag != tc.expectedMajor {
+		t.Errorf("expected MajorTag to be %s, got %s", tc.expectedMajor, updated.MajorTag)
 	}
 
-	t.Logf("LinuxServer BuildID: 25.0.4-ls212 -> %s, major %s", updated.NewTag, updated.MajorTag)
+	t.Logf("%s: %s -> %s, major %s", tc.name, tc.oldTag, updated.NewTag, updated.MajorTag)
 }

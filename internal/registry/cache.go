@@ -1,4 +1,4 @@
-// internal/registry/cache.go
+// Package registry provides functionality for interacting with container registries.
 package registry
 
 import (
@@ -9,6 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+)
+
+const (
+	cacheDirPermissions  = 0o755
+	cacheFilePermissions = 0o600
 )
 
 // CachedClient dekoriert einen RegistryClient mit einem Datei-basierten Cache.
@@ -31,7 +36,7 @@ func NewCachedClient(upstream RegistryClient, ttl time.Duration, forceRefresh bo
 	}
 
 	cacheDir := filepath.Join(userCache, "shiphoist")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+	if err := os.MkdirAll(cacheDir, cacheDirPermissions); err != nil {
 		return nil, err
 	}
 
@@ -115,6 +120,6 @@ func (c *CachedClient) read(key string) (json.RawMessage, bool) {
 func (c *CachedClient) write(key string, data json.RawMessage) {
 	entry := cacheEntry{Timestamp: time.Now(), Data: data}
 	if b, err := json.Marshal(entry); err == nil {
-		_ = os.WriteFile(c.cachePath(key), b, 0o644)
+		_ = os.WriteFile(c.cachePath(key), b, cacheFilePermissions)
 	}
 }

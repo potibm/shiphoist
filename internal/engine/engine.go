@@ -10,6 +10,8 @@ import (
 	"github.com/potibm/shiphoist/internal/core"
 )
 
+const imageProcessingTimeout = 60
+
 // Pipeline orchestrates the entire update lifecycle.
 // It ties together discovery, remote fetching, and local patching.
 type Pipeline struct {
@@ -90,7 +92,7 @@ func (p *Pipeline) fetchSingle(
 	defer wg.Done()
 
 	// Eigener Timeout pro Image
-	imgCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	imgCtx, cancel := context.WithTimeout(ctx, imageProcessingTimeout*time.Second)
 	defer cancel()
 
 	updated, err := p.Fetcher.FetchUpdate(imgCtx, update)

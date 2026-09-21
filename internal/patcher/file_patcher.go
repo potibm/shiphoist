@@ -10,6 +10,8 @@ import (
 	"github.com/potibm/shiphoist/internal/core"
 )
 
+const filePermissions = 0o600
+
 // FilePatcher implements the core.Patcher interface.
 type FilePatcher struct{}
 
@@ -60,7 +62,7 @@ func (p *FilePatcher) Patch(ctx context.Context, filePath string, updates []core
 
 	// 3. Write the modified lines back to the file
 	// Open file for writing, truncate existing content
-	out, err := os.OpenFile(filePath, os.O_WRONLY|os.O_TRUNC, 0o644)
+	out, err := os.OpenFile(filePath, os.O_WRONLY|os.O_TRUNC, filePermissions)
 	if err != nil {
 		return fmt.Errorf("failed to open file for writing %s: %w", filePath, err)
 	}
