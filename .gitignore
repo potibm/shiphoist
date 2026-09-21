@@ -3,3 +3,4 @@ TODO.md
 dist/
 docker-compose.yml
 test/*.log
+oss-licenses/

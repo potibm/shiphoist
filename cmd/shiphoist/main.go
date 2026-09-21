@@ -16,6 +16,12 @@ import (
 	"github.com/potibm/shiphoist/internal/tui"
 )
 
+var (
+	Version = "dev"
+	Commit  = "none"
+	Date    = "unknown"
+)
+
 func buildFetcher(forceRefresh bool) (core.RegistryFetcher, error) {
 	cacheTTL := 15 * time.Minute
 
@@ -85,6 +91,7 @@ func main() {
 	}
 
 	rootCmd.PersistentFlags().BoolVarP(&forceRefresh, "force", "f", false, "Force refresh by bypassing the local cache")
+	rootCmd.Version = fmt.Sprintf("%s (Commit: %s, Date: %s)", Version, Commit, Date)
 
 	var checkCmd = &cobra.Command{
 		Use:   "check [image-reference]",
