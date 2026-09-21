@@ -1,7 +1,7 @@
 {
   "branches": [
-    { "name": "main", "range": "0.x.x" },
-    { "name": "rc", "prerelease": true, "range": "0.x.x" },
+    "main",
+    { "name": "rc", "prerelease": true },
     { "name": "alpha", "prerelease": true }
   ],
   "tagFormat": "v${version}",
@@ -11,6 +11,7 @@
       {
         "preset": "angular",
         "releaseRules": [
+          { "breaking": true, "release": "minor" },
           { "type": "feat", "release": "minor" },
           { "type": "fix", "release": "patch" },
           { "type": "perf", "release": "patch" },
@@ -20,10 +21,12 @@
       }
     ],
     "@semantic-release/release-notes-generator",
+    "@semantic-release/changelog",
     [
-      "@semantic-release/changelog",
+      "@semantic-release/github",
       {
-        "changelogFile": "CHANGELOG.md"
+        "successComment": false,
+        "failComment": false
       }
     ],
     [
@@ -31,13 +34,6 @@
       {
         "assets": ["CHANGELOG.md"],
         "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
-      }
-    ],
-    [
-      "@semantic-release/github",
-      {
-        "successComment": false,
-        "failTitle": false
       }
     ]
   ]
