@@ -1,0 +1,78 @@
+package tui
+
+import (
+	"fmt"
+	"sort"
+
+	"github.com/charmbracelet/huh"
+	"github.com/potibm/shiphoist/internal/core"
+)
+
+type HuhPrompter struct{}
+
+func NewHuhPrompter() *HuhPrompter {
+	return &HuhPrompter{}
+}
+
+func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpdate, error) {
+	if len(updates) == 0 {
+		return updates, nil
+	}
+
+	sort.Slice(updates, func(i, j int) bool {
+		return scoreUpdateType(updates[i].UpdateType) > scoreUpdateType(updates[j].UpdateType)
+	})
+
+	var selectedImageNames []string
+	var options []huh.Option[string]
+
+	// Optionen für das Formular aufbauen
+	for _, u := range updates {
+		label := fmt.Sprintf("%s (%s -> %s)", u.ImageName, u.OldTag, u.NewTag)
+		isSafeToAutoUpdate := u.UpdateType != core.UpdateTypeMajor
+
+		options = append(options, huh.NewOption(label, u.ImageName).Selected(isSafeToAutoUpdate))
+	}
+
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("🚢 Which updates should be applied?").
+				Options(options...).
+				Value(&selectedImageNames),
+		),
+	)
+
+	// TUI starten
+	if err := form.Run(); err != nil {
+		return nil, err
+	}
+
+	// Filtern: Nur die ausgewählten Updates zurückgeben
+	var filteredUpdates []core.ImageUpdate
+	for _, u := range updates {
+		for _, selectedName := range selectedImageNames {
+			if u.ImageName == selectedName {
+				filteredUpdates = append(filteredUpdates, u)
+				break
+			}
+		}
+	}
+
+	return filteredUpdates, nil
+}
+
+func scoreUpdateType(t core.UpdateType) int {
+	switch t {
+	case core.UpdateTypeMajor:
+		return 4
+	case core.UpdateTypeMinor:
+		return 3
+	case core.UpdateTypePatch:
+		return 2
+	case core.UpdateTypeNone: // z.B. reiner Digest-Pin
+		return 1
+	default:
+		return 0
+	}
+}

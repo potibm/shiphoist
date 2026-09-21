@@ -1,0 +1,5 @@
+architecture.md
+TODO.md
+dist/
+docker-compose.yml
+test/*.log

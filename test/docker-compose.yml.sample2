@@ -1,0 +1,63 @@
+x-logging: &default-logging
+  driver: loki
+  options:
+    loki-url: "http://127.0.0.1:3100/loki/api/v1/push"
+    loki-retries: "3"
+    mode: "non-blocking"
+    max-buffer-size: "4m"
+    loki-external-labels: "container_name={{.Name}}"
+
+name: evoke-infra
+
+services:
+
+  # --------------------------------------------------------
+  # Kasseapparat
+  # --------------------------------------------------------
+  kasseapparat:
+    image: ghcr.io/potibm/kasseapparat:2.18.0
+    volumes:
+      - ./kasseapparat/data:/app/data
+      - ./kasseapparat/config/config.yaml:/app/config.yaml
+    environment:
+      - APP_CORS_ALLOW_ORIGINS=https://kasseapparat.orga.evoke.eu
+      - APP_GIN_MODE=release
+      - APP_ENV=production
+      - APP_FRONTEND_URL=https://kasseapparat.orga.evoke.eu
+      - MAILER_DSN=${KASSEAPPARAT_MAILER_DSN}
+      - MAILER_FROM=kasseapparat@evoke.eu
+    networks:
+      - ingress
+      - observability
+      - backend
+    command:
+      - "serve"
+      - "--log-level=debug"
+      - "--otel-endpoint=otel-collector:4317"
+    restart: always
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=evoke-infra_ingress"
+      - "traefik.http.routers.kasseapparat.entrypoints=websecure"
+      - "traefik.http.routers.kasseapparat.rule=Host(`kasseapparat.orga.evoke.eu`)"
+      - "traefik.http.routers.kasseapparat.tls.certresolver=letsencrypt"
+      - "traefik.http.services.kasseapparat.loadbalancer.server.port=8080"
+    user: "1001:1002"
+    pull_policy: always
+
+
+networks:
+  traefik:
+  ingress:
+  rauthy:
+  observability:
+  backend:
+    internal: true
+
+volumes:
+  grafana_data:
+  loki_data:
+  tempo_data:
+  prometheus_data:
+  redis_data:
+  redisinsight_data:

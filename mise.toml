@@ -1,0 +1,26 @@
+[tools]
+go = "1.26"
+goreleaser = "2.16"
+
+[tasks.test]
+description = "Runs all tests in the project"
+run = "go test ./..."
+
+[tasks."test:v"]
+description = "Runs all tests in the project with verbose output"
+run = "go test -v ./..."
+
+[tasks."test:cover"]
+description = "Runs all tests in the project with coverage"
+run = "go test -cover ./..."
+
+[tasks."dev"]
+run = "go run cmd/shiphoist/main.go"
+
+[tasks."release:check"]
+description = "Validates the goreleaser config"
+run = "goreleaser check"
+
+[tasks."release:snapshot"]
+description = "Builds a local snapshot release (no publishing)"
+run = "goreleaser release --snapshot --clean --skip=publish"

@@ -1,0 +1,542 @@
+x-logging: &default-logging
+  driver: loki
+  options:
+    loki-url: "http://127.0.0.1:3100/loki/api/v1/push"
+    loki-retries: "3"
+    mode: "non-blocking"
+    max-buffer-size: "4m"
+    loki-external-labels: "container_name={{.Name}}"
+
+name: evoke-infra
+
+services:
+  traefik:
+    image: traefik:v3.7
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./traefik/traefik.toml:/etc/traefik/traefik.toml
+      - ./traefik/acme.json:/acme.json
+    ports:
+      - '0.0.0.0:80:80'
+      - '0.0.0.0:443:443'
+      - '[::]:80:80'
+      - '[::]:443:443'
+    networks:
+      - traefik
+      - ingress
+      - observability
+    restart: unless-stopped
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=evoke-infra_ingress"
+      - "traefik.http.routers.traefik-dash.rule=Host(`traefik.infra.evoke.eu`)"
+      - "traefik.http.routers.traefik-dash.service=api@internal"
+      - "traefik.http.routers.traefik-dash.entrypoints=websecure"
+      - "traefik.http.routers.traefik-dash.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik-dash.middlewares=rauthy-auth"
+      - "prometheus_scrape=true"
+      - "prometheus_port=8080"
+
+  rauthy:
+    image: ghcr.io/sebadob/rauthy:0.36.0
+    volumes:
+      - ./rauthy/data:/app/data
+      - ./rauthy/config.toml:/app/config.toml
+    networks:
+      - ingress
+      - rauthy
+    logging: *default-logging
+    labels:
+      traefik.enable: "true"
+      traefik.http.services.rauthy.loadbalancer.server.port: 8080
+      traefik.http.routers.rauthy-https.rule: Host(`id.evoke.eu`)
+      traefik.http.routers.rauthy-https.entrypoints: websecure
+      traefik.http.routers.rauthy-https.tls.certresolver: letsencrypt
+      prometheus_scrape: true
+      prometheus_port: 9090
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    volumes:
+      - ./icons/evoke_auth.svg:/etc/oauth2-proxy/evoke_auth.svg:ro
+    environment:
+      - OAUTH2_PROXY_PROVIDER=oidc
+      - OAUTH2_PROXY_CLIENT_ID=homepage
+      - OAUTH2_PROXY_CLIENT_SECRET=${OAUTH2_PROXY_CLIENT_SECRET}
+      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://id.evoke.eu/auth/v1/
+      - OAUTH2_PROXY_COOKIE_SECRET=${OAUTH2_PROXY_COOKIE_SECRET}
+      - OAUTH2_PROXY_EMAIL_DOMAINS=*
+      - OAUTH2_PROXY_PASS_USER_HEADERS=true
+      - OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4180
+      - OAUTH2_PROXY_CODE_CHALLENGE_METHOD=S256
+      - OAUTH2_PROXY_UPSTREAMS=static://200
+      - OAUTH2_PROXY_REVERSE_PROXY=true
+      - OAUTH2_PROXY_COOKIE_DOMAINS=.evoke.eu
+      - OAUTH2_PROXY_CUSTOM_SIGN_IN_LOGO=/etc/oauth2-proxy/evoke_auth.svg
+    networks:
+      - ingress
+    restart: unless-stopped
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=evoke-infra_ingress"
+      - "traefik.http.services.oauth2-proxy.loadbalancer.server.port=4180"
+      - "traefik.http.routers.oauth2-proxy.rule=PathPrefix(`/oauth2`)"
+      - "traefik.http.routers.oauth2-proxy.priority=1000"
+      - "traefik.http.routers.oauth2-proxy.entrypoints=websecure"
+      - "traefik.http.routers.oauth2-proxy.tls.certresolver=letsencrypt"
+      - "traefik.http.middlewares.rauthy-auth.forwardauth.address=http://oauth2-proxy:4180"
+      - "traefik.http.middlewares.rauthy-auth.forwardauth.trustForwardHeader=true"
+      - "traefik.http.middlewares.rauthy-auth.forwardauth.authResponseHeaders=X-Auth-Request-User, X-Auth-Request-Email, X-Auth-Request-Preferred-Username"
+
+  # --------------------------------------------------------
+  # Hub powered by homepage
+  # --------------------------------------------------------
+  homepage:
+    image: ghcr.io/gethomepage/homepage:v1.13.2
+    volumes:
+      - ./homepage:/app/config
+      - ./icons:/app/public/icons
+    environment:
+      - HOMEPAGE_ALLOWED_HOSTS=hub.evoke.eu
+    networks:
+      - ingress
+    restart: unless-stopped
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=evoke-infra_ingress"
+      - "traefik.http.services.homepage.loadbalancer.server.port=3000"
+      - "traefik.http.routers.homepage.rule=Host(`hub.evoke.eu`)"
+      - "traefik.http.routers.homepage.entrypoints=websecure"
+      - "traefik.http.routers.homepage.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.homepage.middlewares=rauthy-auth"
+
+  # --------------------------------------------------------
+  # Observability
+  # --------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.6.16
+    depends_on:
+      - loki
+      - prometheus
+      - tempo
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observe/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+    environment:
+      - GF_AUTH_GENERIC_OAUTH_ENABLED=true
+      - GF_AUTH_GENERIC_OAUTH_NAME=Rauthy
+      - GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP=true
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_ID=grafana
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET=${GRAFANA_CLIENT_SECRET}
+      - GF_AUTH_GENERIC_OAUTH_SCOPES=openid profile email groups
+      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://id.evoke.eu/auth/v1/oidc/authorize
+      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=https://id.evoke.eu/auth/v1/oidc/token
+      - GF_AUTH_GENERIC_OAUTH_API_URL=https://id.evoke.eu/auth/v1/oidc/userinfo
+      - GF_AUTH_GENERIC_OAUTH_USE_PKCE=true
+      - GF_AUTH_GENERIC_OAUTH_CODE_CHALLENGE_METHOD=S256
+      - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH=contains(groups, 'admin') && 'Admin' || 'Viewer'
+      - GF_SERVER_ROOT_URL=https://grafana.infra.evoke.eu
+    networks:
+      - ingress
+      - observability
+      - traefik
+    restart: unless-stopped
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=evoke-infra_ingress"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.infra.evoke.eu`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.tls.certresolver=letsencrypt"
+
+  loki:
+    image: grafana/loki:3.7
+    volumes:
+      - loki_data:/loki
+    ports:
+      - '127.0.0.1:3100:3100'
+    networks:
+      - observability
+    command: -config.file=/etc/loki/local-config.yaml
+
+  tempo:
+    image: grafana/tempo:3.0.2
+    volumes:
+      - ./observe/tempo-config.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/tmp/tempo
+    networks:
+      - observability
+    command: [ "-config.file=/etc/tempo.yaml" ]
+    logging: *default-logging
+    user: "0"
+
+  prometheus:
+    image: prom/prometheus:v3.13.1
+    volumes:
+      - ./observe/prometheus-config.yaml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - observability
+      - ingress
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=evoke-infra_ingress"
+      - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+      - "traefik.http.routers.prometheus.rule=Host(`prometheus.infra.evoke.eu`)"
+      - "traefik.http.routers.prometheus.entrypoints=websecure"
+      - "traefik.http.routers.prometheus.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.prometheus.middlewares=rauthy-auth"
+    user: root
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.156.0
+    depends_on:
+      - loki
+      - tempo
+    volumes:
+      - ./observe/otel-config.yaml:/etc/otel/config.yaml
+      - ./backend/logs:/etc/app/logs:ro
+    networks:
+      - observability
+    command: [ "--config=/etc/otel/config.yaml" ]
+    logging: *default-logging
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - observability
+    restart: unless-stopped
+    logging: *default-logging
+    labels:
+      - "prometheus_scrape=true"
+      - "prometheus_port=8080"
+
+  # --------------------------------------------------------
+  # Billedapparat
+  # --------------------------------------------------------
+  billedapparat:
+    image: ghcr.io/potibm/billedapparat:0.11
+    volumes:
+      - ./billedapparat/data:/app/data
+      - ./billedapparat/config:/app/config
+    environment:
+      - GIN_MODE=release
+      - JWT_REALM=Billedapparat
+      - JWT_SECRET=${BILLEDAPPARAT_JWT_SECRET}
+      - JWT_TIMEOUT=10
+      - CORS_ALLOW_ORIGINS=https://*.orga.evoke.eu
+      - APP_ENV=staging
+      - APP_FRONTEND_URL=https://billedapparat.orga.evoke.eu
+    networks:
+      - ingress
+      - observability
+      - backend
+    restart: always
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=evoke-infra_ingress"
+      - "traefik.http.services.billedapparat.loadbalancer.server.port=8080"
+      - "traefik.http.routers.billedapparat.entrypoints=websecure"
+      - "traefik.http.routers.billedapparat.rule=Host(`billedapparat.orga.evoke.eu`)"
+      - "traefik.http.routers.billedapparat.tls.certresolver=letsencrypt"
+    user: "1001:1002"
+    pull_policy: always
+
+  billedapparat-collector-mastodon:
+    image: ghcr.io/potibm/billedapparat:0.11
+    volumes:
+      - ./billedapparat/data:/app/data
+      - ./billedapparat/config:/app/config
+    environment:
+      - APP_ENV=staging
+      - APP_FRONTEND_URL=https://billedapparat.orga.evoke.eu
+    networks:
+      - ingress
+      - observability
+    command: [ "collect", "mastodon" ]
+    restart: always
+    user: "1001:1002"
+    pull_policy: always
+
+  billedapparat-collector-pouet:
+    image: ghcr.io/potibm/billedapparat:0.11
+    volumes:
+      - ./billedapparat/data:/app/data
+      - ./billedapparat/config:/app/config
+    environment:
+      - APP_ENV=staging
+      - APP_FRONTEND_URL=https://billedapparat.orga.evoke.eu
+    networks:
+      - ingress
+      - observability
+    command: [ "collect", "pouet" ]
+    restart: always
+    user: "1001:1002"
+    pull_policy: always
+
+  billedapparat-collector-bluesky:
+    image: ghcr.io/potibm/billedapparat:0.11
+    volumes:
+      - ./billedapparat/data:/app/data
+      - ./billedapparat/config:/app/config
+    environment:
+      - APP_ENV=staging
+      - APP_FRONTEND_URL=https://billedapparat.orga.evoke.eu
+    networks:
+      - ingress
+      - observability
+    command: [ "collect", "bluesky" ]
+    restart: always
+    logging: *default-logging
+    user: "1001:1002"
+    pull_policy: always
+
+  billedapparat-collector-discord:
+    image: ghcr.io/potibm/billedapparat:0.11
+    volumes:
+      - ./billedapparat/data:/app/data
+      - ./billedapparat/config:/app/config
+    environment:
+      - APP_ENV=staging
+      - APP_FRONTEND_URL=https://billedapparat.orga.evoke.eu
+    networks:
+      - ingress
+      - observability
+    command: [ "collect", "discord" ]
+    restart: always
+    user: "1001:1002"
+    pull_policy: always
+
+  billedapparat-collector-twitch:
+    image: ghcr.io/potibm/billedapparat:0.11
+    volumes:
+      - ./billedapparat/data:/app/data
+      - ./billedapparat/config:/app/config
+    environment:
+      - APP_ENV=staging
+      - APP_FRONTEND_URL=https://billedapparat.orga.evoke.eu
+    networks:
+      - ingress
+      - observability
+    command: [ "collect", "twitch" ]
+    restart: always
+    user: "1001:1002"
+    pull_policy: always
+
+  billedapparat-collector-protokolapparat-news:
+    image: ghcr.io/potibm/billedapparat:0.11
+    volumes:
+      - ./billedapparat/data:/app/data
+      - ./billedapparat/config:/app/config
+    environment:
+      - APP_ENV=staging
+      - APP_FRONTEND_URL=https://billedapparat.orga.evoke.eu
+    networks:
+      - ingress
+      - observability
+      - backend
+    command: [ "collect", "protokolapparat-news" ]
+    restart: always
+    user: "1001:1002"
+    pull_policy: always
+
+  billedapparat-collector-protokolapparat-timetable:
+    image: ghcr.io/potibm/billedapparat:0.11
+    volumes:
+      - ./billedapparat/data:/app/data
+      - ./billedapparat/config:/app/config
+    environment:
+      - APP_ENV=staging
+      - APP_FRONTEND_URL=https://billedapparat.orga.evoke.eu
+    networks:
+      - ingress
+      - observability
+      - backend
+    command: [ "collect", "protokolapparat-timetable" ]
+    restart: always
+    user: "1001:1002"
+    pull_policy: always
+
+  # --------------------------------------------------------
+  # Funkapparat
+  # --------------------------------------------------------
+  funkapparat:
+    image: ghcr.io/potibm/funkapparat:0.2
+    volumes:
+      - ./funkapparat/data:/app/data
+      - ./funkapparat/config:/app/config
+    environment:
+      - APP_ENV=staging
+      - APP_FRONTEND_URL=https://funkapparat.orga.evoke.eu
+      - APP_CORS_ALLOW_ORIGINS=https://funkapparat.orga.evoke.eu
+    networks:
+      - ingress
+      - observability
+      - backend
+    restart: always
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=evoke-infra_ingress"
+      - "traefik.http.services.funkapparat.loadbalancer.server.port=8080"
+      - "traefik.http.routers.funkapparat.entrypoints=websecure"
+      - "traefik.http.routers.funkapparat.rule=Host(`funkapparat.orga.evoke.eu`)"
+      - "traefik.http.routers.funkapparat.tls.certresolver=letsencrypt"
+    user: "1001:1002"
+    pull_policy: always
+
+  # --------------------------------------------------------
+  # Kasseapparat
+  # --------------------------------------------------------
+  kasseapparat:
+    image: ghcr.io/potibm/kasseapparat:2.18.0
+    volumes:
+      - ./kasseapparat/data:/app/data
+      - ./kasseapparat/config/config.yaml:/app/config.yaml
+    environment:
+      - APP_CORS_ALLOW_ORIGINS=https://kasseapparat.orga.evoke.eu
+      - APP_GIN_MODE=release
+      - APP_ENV=production
+      - APP_FRONTEND_URL=https://kasseapparat.orga.evoke.eu
+      - MAILER_DSN=${KASSEAPPARAT_MAILER_DSN}
+      - MAILER_FROM=kasseapparat@evoke.eu
+    networks:
+      - ingress
+      - observability
+      - backend
+    command:
+      - "serve"
+      - "--log-level=debug"
+      - "--otel-endpoint=otel-collector:4317"
+    restart: always
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=evoke-infra_ingress"
+      - "traefik.http.routers.kasseapparat.entrypoints=websecure"
+      - "traefik.http.routers.kasseapparat.rule=Host(`kasseapparat.orga.evoke.eu`)"
+      - "traefik.http.routers.kasseapparat.tls.certresolver=letsencrypt"
+      - "traefik.http.services.kasseapparat.loadbalancer.server.port=8080"
+    user: "1001:1002"
+    pull_policy: always
+
+  # --------------------------------------------------------
+  # Redis
+  # --------------------------------------------------------
+  redis:
+    image: redis:8.8
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    command: redis-server --save 60 1 --loglevel warning
+    restart: always
+    logging: *default-logging
+    pull_policy: always
+
+  redisinsight:
+    image: redis/redisinsight:3.8
+    volumes:
+      - redisinsight_data:/data
+    environment:
+      - RI_ACCEPT_TERMS_AND_CONDITIONS=true
+      - RI_REDIS_ALIAS0=Protokolapparat-Redis
+      - RI_REDIS_HOST0=redis
+      - RI_REDIS_PORT0=6379
+    networks:
+      - ingress
+      - backend
+    restart: unless-stopped
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=evoke-infra_ingress"
+      - "traefik.http.routers.redisinsight.rule=Host(`redis.infra.evoke.eu`)"
+      - "traefik.http.routers.redisinsight.entrypoints=websecure"
+      - "traefik.http.routers.redisinsight.tls.certresolver=letsencrypt"
+      - "traefik.http.services.redisinsight.loadbalancer.server.port=5540"
+      - "traefik.http.routers.redisinsight.middlewares=rauthy-auth"
+      - "com.centurylinklabs.watchtower.enable=false"
+    pull_policy: always
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.87.0
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    networks:
+      - backend
+      - observability
+    restart: unless-stopped
+    logging: *default-logging
+    labels:
+      - "prometheus_scrape=true"
+      - "prometheus_port=9121"
+
+  # --------------------------------------------------------
+  # Tidsapparat
+  # --------------------------------------------------------
+  tidsapparat:
+    image: ghcr.io/potibm/tidsapparat:0.2
+    volumes:
+      - ./tidsapparat/data:/app/data
+      - ./tidsapparat/config:/app/config
+    environment:
+      - APP_ENV=staging
+      - APP_FRONTEND_URL=https://tidsapparat.orga.evoke.eu
+      - APP_CORS_ALLOW_ORIGINS=https://*.orga.evoke.eu
+    networks:
+      - ingress
+      - observability
+      - backend
+    restart: always
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=evoke-infra_ingress"
+      - "traefik.http.services.tidsapparat.loadbalancer.server.port=8080"
+      - "traefik.http.routers.tidsapparat.entrypoints=websecure"
+      - "traefik.http.routers.tidsapparat.rule=Host(`tidsapparat.orga.evoke.eu`)"
+      - "traefik.http.routers.tidsapparat.tls.certresolver=letsencrypt"
+    user: "1001:1002"
+    pull_policy: always
+
+  # --------------------------------------------------------
+  # Watchtower
+  # --------------------------------------------------------
+  watchtower:
+    image: nickfedor/watchtower:1.19
+    container_name: watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=86400
+    restart: unless-stopped
+    logging: *default-logging
+
+networks:
+  traefik:
+  ingress:
+  rauthy:
+  observability:
+  backend:
+    internal: true
+
+volumes:
+  grafana_data:
+  loki_data:
+  tempo_data:
+  prometheus_data:
+  redis_data:
+  redisinsight_data:

@@ -1,0 +1,118 @@
+# Web servers & proxies
+nginx:1.24.0
+httpd:2.4.56
+traefik:v2.10.1
+caddy:2.6.4
+haproxy:2.7.0
+envoyproxy/envoy:v1.26.0
+
+# Relational databases
+postgres:14.7
+mysql:8.0.32
+mariadb:10.11.2
+bitnami/postgresql:15.2.0
+bitnami/mysql:8.0.32
+
+# NoSQL, caching & search
+redis:7.0.10
+mongo:6.0.4
+memcached:1.6.19
+elasticsearch:8.7.0
+kibana:8.7.0
+opensearchproject/opensearch:2.6.0
+rabbitmq:3.11.13-management
+
+# Runtimes & languages
+node:18.15.0-alpine
+python:3.10.10-slim
+golang:1.20.2-alpine
+openjdk:17-jdk-slim
+eclipse-temurin:17.0.6_10-jre
+php:8.1.18-fpm
+ruby:3.1.3-alpine
+rust:1.68.2
+mcr.microsoft.com/dotnet/aspnet:7.0.4
+
+# Base operating systems
+alpine:3.17.2
+ubuntu:22.04
+debian:bullseye-slim
+busybox:1.35.0
+almalinux:9.1
+
+# CI/CD, registries & developer tools
+gitlab/gitlab-ce:15.10.0-ce.0
+gitea/gitea:1.19.0
+registry:2.8.1
+sonarqube:9.9.0-community
+jenkins/jenkins:2.387.2-lts
+
+# Monitoring & telemetry
+prom/prometheus:v2.43.0
+grafana/grafana:9.5.1
+influxdb:2.6.1
+jaegertracing/all-in-one:1.44.0
+otel/opentelemetry-collector:0.75.0
+
+# Self-hosted applications
+portainer/portainer-ce:2.18.1
+nextcloud:26.0.0
+ghost:5.41.0
+vaultwarden/server:1.27.0
+pihole/pihole:2023.03.1
+homeassistant/home-assistant:2023.4.0
+gotson/komga:1.0.0
+linuxserver/jellyfin:10.8.9
+
+# VERSIONING EDGE CASES
+# --- CalVer (Calendar Versioning) ---
+# Ubuntu (YY.MM Point-Releases)
+ubuntu:20.04
+ubuntu:22.04.2
+
+# Home Assistant & Pi-hole (YYYY.M.P / YYYY.MM.P)
+homeassistant/home-assistant:2023.3.0
+pihole/pihole:2022.11.1
+
+# yt-dlp & CalVer-Tools (YYYY.MM.DD)
+jauderho/yt-dlp:2023.03.04
+
+# --- Upstream-SemVer + Downstream-Build ---
+# LinuxServer.io (SemVer-ls<build>)
+linuxserver/jellyfin:10.8.9-1-ls164
+linuxserver/plex:1.31.1.6733-bc06770e6-ls89
+linuxserver/nextcloud:25.0.4-ls212
+
+# Bitnami (SemVer-distro-r<revision>)
+bitnami/postgresql:15.2.0-debian-11-r10
+bitnami/redis:7.0.8-debian-11-r0
+bitnami/nginx:1.23.3-debian-11-r15
+
+# GitLab CE (SemVer-ce.<build>)
+gitlab/gitlab-ce:15.9.3-ce.0
+
+# Eclipse Temurin (Java JEP 223 mit Unterstrich)
+eclipse-temurin:17.0.6_10-jdk
+eclipse-temurin:11.0.18_10-jre-alpine
+
+# --- Codename- & Named-Tags (Rolling / Multi-Variant) ---
+# Debian Codenamen (Toy Story)
+debian:buster
+debian:bullseye-slim
+
+# PHP Varianten-Mix (Language + SAPI + OS-Codename)
+php:8.1.16-fpm-bullseye
+php:8.0.28-apache-buster
+
+# Rolling / Edge Tags
+alpine:edge
+archlinux:base
+
+# --- Two-Digit Major.Minor (ohne expliziten Patch) ---
+python:3.10-slim
+node:18-alpine
+golang:1.20-buster
+postgres:15-alpine
+
+# --- Inkrementelle Ganzzahlen / Jahre ---
+texlive/texlive:TL2022-historic
