@@ -18,20 +18,20 @@ func ParseImageReference(ref string) (name, tag, digest string) {
 			absTagIdx := idx + tagIdx
 			name = remaining[:absTagIdx]
 			tag = remaining[absTagIdx+1:]
-			return
+
+			return name, tag, digest
 		}
+
 		name = remaining
 		tag = "latest"
-		return
+
+		return name, tag, digest
 	}
 
-	if idx := strings.Index(remaining, ":"); idx != -1 {
-		name = remaining[:idx]
-		tag = remaining[idx+1:]
-		return
-	}
+	if name, tag, ok = strings.Cut(remaining, ":"); ok { ... }
 
 	name = remaining
 	tag = "latest"
-	return
+
+	return name, tag, digest
 }

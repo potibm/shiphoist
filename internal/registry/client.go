@@ -27,6 +27,7 @@ func (c *RemoteClient) ListTags(ctx context.Context, repoName string) ([]string,
 	if err != nil {
 		return nil, err
 	}
+
 	return remote.List(repo, remote.WithAuthFromKeychain(authn.DefaultKeychain), remote.WithContext(ctx))
 }
 
@@ -35,9 +36,11 @@ func (c *RemoteClient) GetDigest(ctx context.Context, refString string) (string,
 	if err != nil {
 		return "", err
 	}
+
 	desc, err := remote.Head(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain), remote.WithContext(ctx))
 	if err != nil {
 		return "", err
 	}
+
 	return desc.Digest.String(), nil
 }

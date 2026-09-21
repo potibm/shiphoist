@@ -10,10 +10,10 @@ import (
 	"github.com/potibm/shiphoist/internal/core"
 )
 
-// FilePatcher implements the core.Patcher interface
+// FilePatcher implements the core.Patcher interface.
 type FilePatcher struct{}
 
-// Patch applies the updates to the given file surgically by line number
+// Patch applies the updates to the given file surgically by line number.
 func (p *FilePatcher) Patch(ctx context.Context, filePath string, updates []core.ImageUpdate) error {
 	// 1. Read the entire file line by line
 	file, err := os.Open(filePath)
@@ -22,10 +22,12 @@ func (p *FilePatcher) Patch(ctx context.Context, filePath string, updates []core
 	}
 
 	var lines []string
+
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
+
 	file.Close()
 
 	if err := scanner.Err(); err != nil {
@@ -58,7 +60,7 @@ func (p *FilePatcher) Patch(ctx context.Context, filePath string, updates []core
 
 	// 3. Write the modified lines back to the file
 	// Open file for writing, truncate existing content
-	out, err := os.OpenFile(filePath, os.O_WRONLY|os.O_TRUNC, 0644)
+	out, err := os.OpenFile(filePath, os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("failed to open file for writing %s: %w", filePath, err)
 	}

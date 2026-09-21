@@ -24,6 +24,7 @@ func NewDefaultFetcher(client RegistryClient) *DefaultFetcher {
 
 func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpdate) (core.ImageUpdate, error) {
 	refString := fmt.Sprintf("%s:%s", current.ImageName, current.OldTag)
+
 	oldDigest, err := f.client.GetDigest(ctx, refString)
 	if err != nil {
 		var terr *transport.Error
@@ -52,10 +53,12 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 				}
 			}
 		}
+
 		if !current.OldTagMissing && current.OldDigest != current.CurrentDigest {
 			current.UpdateType = core.UpdateTypePatch
 			current.Selected = true
 		}
+
 		return current, nil
 	}
 
@@ -77,6 +80,7 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 
 	if len(candidates) == 0 {
 		current.NoCompatibleTags = true
+
 		return current, nil
 	}
 
@@ -89,8 +93,11 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 
 	isCalVer := oldParsed.SemVer.Major() >= 1900
 
-	var sameMajor TagList
-	var majorBump *Tag
+	var (
+		sameMajor TagList
+		majorBump *Tag
+	)
+
 	for i := range candidates {
 		tag := &candidates[i]
 		tagIsCalVer := tag.SemVer.Major() >= 1900
@@ -131,13 +138,17 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 	if current.OldTagMissing && !current.Selected {
 		// Use baseCandidates (any precision) for successor search
 		successorCandidates := baseCandidates.FilterByVPrefix(oldParsed.HasVPrefix).SortBySemver()
+
 		var successorSameMajor TagList
+
 		for i := range successorCandidates {
 			tag := &successorCandidates[i]
+
 			tagIsCalVer := tag.SemVer.Major() >= 1900
 			if isCalVer != tagIsCalVer {
 				continue
 			}
+
 			if tag.SemVer.Major() == oldParsed.SemVer.Major() {
 				successorSameMajor = append(successorSameMajor, *tag)
 			}
@@ -156,6 +167,7 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 					if newDigest, err := f.client.GetDigest(ctx, newRefString); err == nil {
 						current.NewDigest = newDigest
 					}
+
 					break
 				}
 			}

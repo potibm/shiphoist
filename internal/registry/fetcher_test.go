@@ -100,9 +100,11 @@ func TestDefaultFetcher_ListTags(t *testing.T) {
 
 	// Let's look for a tag we know definitely exists
 	found := false
+
 	for _, tag := range tags {
 		if tag.Raw == "3.18" {
 			found = true
+
 			break
 		}
 	}
@@ -231,6 +233,7 @@ func TestDefaultFetcher_FetchUpdate_CurrentDigest(t *testing.T) {
 			if ref == "example/repo:1.0.0" {
 				return "sha256:current123", nil
 			}
+
 			return "sha256:new456", nil
 		},
 		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
@@ -300,6 +303,7 @@ func TestDefaultFetcher_FetchUpdate_VPrefixPreference(t *testing.T) {
 			if ref == "example/repo:v1.0.0" {
 				return "sha256:old", nil
 			}
+
 			return "sha256:new", nil
 		},
 		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
@@ -336,6 +340,7 @@ func TestDefaultFetcher_FetchUpdate_SameMajorPrimary(t *testing.T) {
 			if ref == "example/repo:14.7" {
 				return "sha256:old", nil
 			}
+
 			return "sha256:new", nil
 		},
 		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
@@ -380,6 +385,7 @@ func TestDefaultFetcher_FetchUpdate_CalVerBoundary(t *testing.T) {
 			if ref == "example/jellyfin:10.8.9" {
 				return "sha256:old", nil
 			}
+
 			return "sha256:new", nil
 		},
 		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
@@ -416,6 +422,7 @@ func TestDefaultFetcher_FetchUpdate_PrecisionFallback_Successor(t *testing.T) {
 			if ref == "ubuntu:22.04.2" {
 				return "", &transport.Error{StatusCode: http.StatusNotFound}
 			}
+
 			return "sha256:new", nil
 		},
 		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
@@ -495,6 +502,7 @@ func TestDefaultFetcher_FetchUpdate_JEP223(t *testing.T) {
 			if ref == "eclipse-temurin:17.0.6_10-jre" {
 				return "sha256:old", nil
 			}
+
 			return "sha256:new", nil
 		},
 		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
@@ -535,6 +543,7 @@ func TestDefaultFetcher_FetchUpdate_LinuxServer_BuildID(t *testing.T) {
 			if ref == "linuxserver/nextcloud:25.0.4-ls212" {
 				return "sha256:old", nil
 			}
+
 			return "sha256:new", nil
 		},
 		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {

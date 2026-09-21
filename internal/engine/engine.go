@@ -32,8 +32,11 @@ func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) ([]core.Ima
 		return nil, nil
 	}
 
-	var wg sync.WaitGroup
-	var mu sync.Mutex
+	var (
+		wg sync.WaitGroup
+		mu sync.Mutex
+	)
+
 	var fetchedUpdates []core.ImageUpdate // Umbenannt von appliedUpdates zur Klarheit
 
 	// Thread-sicherer Zähler für unseren Fortschritt
@@ -51,7 +54,7 @@ func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) ([]core.Ima
 		return nil, nil
 	}
 
-	// 2. Prompt (Interaktive Auswahl) - JETZT mit den fertigen fetchedUpdates!
+	// 2. Prompt (Interactive Auswahl) - JETZT mit den fertigen fetchedUpdates!
 	selectedUpdates := fetchedUpdates
 	if p.Prompter != nil {
 		selectedUpdates, err = p.Prompter.SelectUpdates(fetchedUpdates)
@@ -97,6 +100,7 @@ func (p *Pipeline) fetchSingle(
 
 	if err != nil {
 		fmt.Printf("\r⚠️  [%d/%d] Skipping %s: registry error (%v)\n", currentProgress, total, update.ImageName, err)
+
 		return
 	}
 
@@ -105,6 +109,7 @@ func (p *Pipeline) fetchSingle(
 
 	if updated.Selected {
 		mu.Lock()
+
 		*appliedUpdates = append(*appliedUpdates, updated)
 		mu.Unlock()
 	}

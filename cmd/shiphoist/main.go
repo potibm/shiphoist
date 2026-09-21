@@ -40,7 +40,7 @@ func buildFetcher(forceRefresh bool) (core.RegistryFetcher, error) {
 func main() {
 	var forceRefresh bool
 
-	var rootCmd = &cobra.Command{
+	rootCmd := &cobra.Command{
 		Use:   "shiphoist [path-to-docker-compose.yml]",
 		Short: "A high-performance Go CLI tool to update Docker images",
 		Args:  cobra.ExactArgs(1),
@@ -66,6 +66,7 @@ func main() {
 			if forceRefresh {
 				fmt.Println("🔄 Force refresh activated - bypassing cache...")
 			}
+
 			fmt.Printf("🚢 Hoisting sails for %s...\n", filePath)
 
 			updates, err := pipeline.ProcessFile(ctx, filePath)
@@ -76,10 +77,12 @@ func main() {
 
 			if len(updates) == 0 {
 				fmt.Println("✅ Everything is up to date! No changes needed.")
+
 				return
 			}
 
 			fmt.Printf("✅ Successfully applied %d updates:\n\n", len(updates))
+
 			for _, u := range updates {
 				if u.UpdateType == core.UpdateTypeNone {
 					fmt.Printf("  📌 %s: pinned to new digest\n", u.ImageName)
@@ -93,7 +96,7 @@ func main() {
 	rootCmd.PersistentFlags().BoolVarP(&forceRefresh, "force", "f", false, "Force refresh by bypassing the local cache")
 	rootCmd.Version = fmt.Sprintf("%s (Commit: %s, Date: %s)", Version, Commit, Date)
 
-	var checkCmd = &cobra.Command{
+	checkCmd := &cobra.Command{
 		Use:   "check [image-reference]",
 		Short: "Check a single Docker image for available updates",
 		Long: `Check a single Docker image reference for available updates.
@@ -133,20 +136,25 @@ Example: shiphoist check ghcr.io/potibm/kasseapparat:2.18.0`,
 				fmt.Printf("⚠️  Tag %s not found in registry (deleted?)\n", updated.OldTag)
 			} else {
 				fmt.Printf("🏷  Current: %s", updated.OldTag)
+
 				if updated.CurrentDigest != "" {
 					fmt.Printf(" (digest: %s)", shortDigest(updated.CurrentDigest))
 				}
+
 				if updated.OldDigest != "" && updated.OldDigest != updated.CurrentDigest {
 					fmt.Printf(" [pinned: %s]", shortDigest(updated.OldDigest))
 				}
+
 				fmt.Println()
 			}
 
 			if updated.Selected && updated.NewTag != updated.OldTag {
 				fmt.Printf("🚀 Latest:  %s (%s)", updated.NewTag, updated.UpdateType)
+
 				if updated.NewDigest != "" {
 					fmt.Printf(" (digest: %s)", shortDigest(updated.NewDigest))
 				}
+
 				fmt.Println()
 			} else if updated.Selected && updated.NewTag == updated.OldTag {
 				fmt.Printf("📌 Pin to digest: %s\n", shortDigest(updated.NewDigest))
@@ -179,5 +187,6 @@ func shortDigest(digest string) string {
 	if len(digest) > 16 {
 		return digest[:16] + "..."
 	}
+
 	return digest
 }

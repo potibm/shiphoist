@@ -21,7 +21,7 @@ type CachedClient struct {
 
 type cacheEntry struct {
 	Timestamp time.Time       `json:"timestamp"`
-	Data      json.RawMessage `json:"data"` // Flexibel für []string oder string
+	Data      json.RawMessage `json:"data"` // Flexible für []string oder string
 }
 
 func NewCachedClient(upstream RegistryClient, ttl time.Duration, forceRefresh bool) (*CachedClient, error) {
@@ -31,7 +31,7 @@ func NewCachedClient(upstream RegistryClient, ttl time.Duration, forceRefresh bo
 	}
 
 	cacheDir := filepath.Join(userCache, "shiphoist")
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, err
 	}
 
@@ -91,9 +91,10 @@ func (c *CachedClient) GetDigest(ctx context.Context, ref string) (string, error
 	return digest, nil
 }
 
-// --- Hilfsmethoden für I/O ---
+// --- Hilfsmethoden für I/O ---.
 func (c *CachedClient) cachePath(key string) string {
 	hash := sha256.Sum256([]byte(key))
+
 	return filepath.Join(c.cacheDir, fmt.Sprintf("%x.json", hash))
 }
 
@@ -102,16 +103,18 @@ func (c *CachedClient) read(key string) (json.RawMessage, bool) {
 	if err != nil {
 		return nil, false
 	}
+
 	var entry cacheEntry
 	if err := json.Unmarshal(data, &entry); err != nil || time.Since(entry.Timestamp) > c.ttl {
 		return nil, false
 	}
+
 	return entry.Data, true
 }
 
 func (c *CachedClient) write(key string, data json.RawMessage) {
 	entry := cacheEntry{Timestamp: time.Now(), Data: data}
 	if b, err := json.Marshal(entry); err == nil {
-		_ = os.WriteFile(c.cachePath(key), b, 0644)
+		_ = os.WriteFile(c.cachePath(key), b, 0o644)
 	}
 }

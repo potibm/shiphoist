@@ -42,7 +42,8 @@ services:
 	// 1. Create a temporary file
 	tempDir := t.TempDir()
 	tempFile := filepath.Join(tempDir, "docker-compose.yaml")
-	err := os.WriteFile(tempFile, []byte(originalYAML), 0644)
+
+	err := os.WriteFile(tempFile, []byte(originalYAML), 0o644)
 	if err != nil {
 		t.Fatalf("failed to write temp file: %v", err)
 	}
@@ -67,6 +68,7 @@ services:
 
 	// 3. Run the Patcher
 	patcher := &FilePatcher{}
+
 	err = patcher.Patch(context.Background(), tempFile, updates)
 	if err != nil {
 		t.Fatalf("unexpected error during Patch: %v", err)

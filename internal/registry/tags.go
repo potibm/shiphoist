@@ -42,6 +42,7 @@ func ParseTag(raw string) (Tag, error) {
 		if minor == "" {
 			minor = "0"
 		}
+
 		if patch == "" {
 			patch = "0"
 		}
@@ -50,6 +51,7 @@ func ParseTag(raw string) (Tag, error) {
 		if variant != "" {
 			normalized += "+" + strings.TrimPrefix(variant, "-")
 		}
+
 		isJEP223 = true
 	}
 
@@ -59,6 +61,7 @@ func ParseTag(raw string) (Tag, error) {
 	}
 
 	suffix := ""
+
 	if !isJEP223 {
 		dashIndex := strings.Index(raw, "-")
 		if dashIndex != -1 {
@@ -92,11 +95,13 @@ func ParseTag(raw string) (Tag, error) {
 			if m[2] != "" {
 				coreVersion += "." + m[2]
 			}
+
 			if m[3] != "" {
 				coreVersion += "." + m[3]
 			}
 		}
 	}
+
 	precision := strings.Count(coreVersion, ".") + 1
 	hasVPrefix := strings.HasPrefix(raw, "v")
 
@@ -118,23 +123,27 @@ type TagList []Tag
 // and returns a TagList containing only the valid semantic versions.
 func NewTagListFromStrings(rawTags []string) TagList {
 	var tags TagList
+
 	for _, raw := range rawTags {
 		parsed, err := ParseTag(raw)
 		if err == nil {
 			tags = append(tags, parsed)
 		}
 	}
+
 	return tags
 }
 
 // FilterBySuffix returns a new TagList containing only tags with the exact suffix.
 func (t TagList) FilterBySuffix(suffix string) TagList {
 	var filtered TagList
+
 	for _, tag := range t {
 		if tag.Suffix == suffix {
 			filtered = append(filtered, tag)
 		}
 	}
+
 	return filtered
 }
 
@@ -142,32 +151,38 @@ func (t TagList) FilterBySuffix(suffix string) TagList {
 // (suffix with trailing build/revision IDs stripped).
 func (t TagList) FilterByBaseSuffix(baseSuffix string) TagList {
 	var filtered TagList
+
 	for _, tag := range t {
 		if tag.BaseSuffix == baseSuffix {
 			filtered = append(filtered, tag)
 		}
 	}
+
 	return filtered
 }
 
 func (t TagList) FilterByPrecision(precision int) TagList {
 	var filtered TagList
+
 	for _, tag := range t {
 		if tag.Precision == precision {
 			filtered = append(filtered, tag)
 		}
 	}
+
 	return filtered
 }
 
 // FilterByVPrefix returns a new TagList containing only tags with matching v-prefix style.
 func (t TagList) FilterByVPrefix(hasVPrefix bool) TagList {
 	var filtered TagList
+
 	for _, tag := range t {
 		if tag.HasVPrefix == hasVPrefix {
 			filtered = append(filtered, tag)
 		}
 	}
+
 	return filtered
 }
 
@@ -182,6 +197,7 @@ func (t TagList) SortBySemver() TagList {
 		if sorted[i].SemVer.Equal(sorted[j].SemVer) {
 			return sorted[i].BuildID < sorted[j].BuildID
 		}
+
 		return sorted[i].SemVer.LessThan(sorted[j].SemVer)
 	})
 

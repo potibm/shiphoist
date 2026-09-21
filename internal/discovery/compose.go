@@ -44,6 +44,7 @@ func (c *ComposeDiscoverer) Discover(ctx context.Context, filePath string) ([]co
 
 	// 3. Iterate through the services map safely
 	var findImages func(n ast.Node)
+
 	findImages = func(n ast.Node) {
 		switch v := n.(type) {
 		case *ast.MappingNode:
@@ -72,7 +73,7 @@ func (c *ComposeDiscoverer) Discover(ctx context.Context, filePath string) ([]co
 	return updates, nil
 }
 
-// Helper function to extract metadata cleanly from the node
+// Helper function to extract metadata cleanly from the node.
 func extractImageUpdate(node ast.Node, filePath string) core.ImageUpdate {
 	token := node.GetToken()
 	originalString := token.Value

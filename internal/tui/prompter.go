@@ -23,8 +23,10 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 		return scoreUpdateType(updates[i].UpdateType) > scoreUpdateType(updates[j].UpdateType)
 	})
 
-	var selectedImageNames []string
-	var options []huh.Option[string]
+	var (
+		selectedImageNames []string
+		options            []huh.Option[string]
+	)
 
 	// Optionen für das Formular aufbauen
 	for _, u := range updates {
@@ -50,10 +52,12 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 
 	// Filtern: Nur die ausgewählten Updates zurückgeben
 	var filteredUpdates []core.ImageUpdate
+
 	for _, u := range updates {
 		for _, selectedName := range selectedImageNames {
 			if u.ImageName == selectedName {
 				filteredUpdates = append(filteredUpdates, u)
+
 				break
 			}
 		}
