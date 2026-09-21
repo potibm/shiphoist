@@ -81,13 +81,13 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 	sameMajor, majorBump := f.classifyCandidates(candidates, oldParsed, isCalVer)
 
 	if len(sameMajor) > 0 {
-		f.processSameMajorUpdate(&current, sameMajor, oldParsed)
+		f.processSameMajorUpdate(ctx, &current, sameMajor, oldParsed)
 	}
 
 	// Successor rule: when tag is missing and no greater same-major candidate,
 	// look for a coarser-precision tag that's a version prefix of the current tag
 	if current.OldTagMissing && !current.Selected {
-		f.applySuccessorRule(&current, baseCandidates, oldParsed, isCalVer)
+		f.applySuccessorRule(ctx, &current, baseCandidates, oldParsed, isCalVer)
 	}
 
 	if majorBump != nil {
@@ -150,7 +150,12 @@ func (f *DefaultFetcher) handleNonSemverTag(ctx context.Context, current core.Im
 	return current, nil
 }
 
-func (f *DefaultFetcher) processSameMajorUpdate(current *core.ImageUpdate, sameMajor TagList, oldParsed Tag) {
+func (f *DefaultFetcher) processSameMajorUpdate(
+	ctx context.Context,
+	current *core.ImageUpdate,
+	sameMajor TagList,
+	oldParsed Tag,
+) {
 	safeNewest := sameMajor[len(sameMajor)-1]
 	if !safeNewest.SemVer.GreaterThan(oldParsed.SemVer) {
 		return
@@ -166,12 +171,13 @@ func (f *DefaultFetcher) processSameMajorUpdate(current *core.ImageUpdate, sameM
 	}
 
 	newRefString := fmt.Sprintf("%s:%s", current.ImageName, current.NewTag)
-	if newDigest, err := f.client.GetDigest(context.Background(), newRefString); err == nil {
+	if newDigest, err := f.client.GetDigest(ctx, newRefString); err == nil {
 		current.NewDigest = newDigest
 	}
 }
 
 func (f *DefaultFetcher) applySuccessorRule(
+	ctx context.Context,
 	current *core.ImageUpdate,
 	baseCandidates TagList,
 	oldParsed Tag,
@@ -209,7 +215,7 @@ func (f *DefaultFetcher) applySuccessorRule(
 		current.UpdateType = core.UpdateTypePatch
 
 		newRefString := fmt.Sprintf("%s:%s", current.ImageName, current.NewTag)
-		if newDigest, err := f.client.GetDigest(context.Background(), newRefString); err == nil {
+		if newDigest, err := f.client.GetDigest(ctx, newRefString); err == nil {
 			current.NewDigest = newDigest
 		}
 

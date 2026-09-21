@@ -9,9 +9,9 @@ builds:
       - CGO_ENABLED=0
     ldflags:
       - -s -w 
-      - -X github.com/dein-user/dein-repo/cmd.Version={{.Version}}
-      - -X github.com/dein-user/dein-repo/cmd.Commit={{.Commit}}
-      - -X github.com/dein-user/dein-repo/cmd.Date={{.Date}}
+      - -X github.com/potibm/shiphoist/cmd/shiphoist.Version={{.Version}}
+      - -X github.com/potibm/shiphoist/cmd/shiphoist.Commit={{.Commit}}
+      - -X github.com/potibm/shiphoist/cmd/shiphoist.Date={{.Date}}
     goos:
       - linux
       - darwin
