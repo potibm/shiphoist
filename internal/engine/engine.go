@@ -39,12 +39,10 @@ func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) ([]core.Ima
 		mu sync.Mutex
 	)
 
-	var fetchedUpdates []core.ImageUpdate // Umbenannt von appliedUpdates zur Klarheit
+	var fetchedUpdates []core.ImageUpdate
 
-	// Thread-sicherer Zähler für unseren Fortschritt
 	var completed int32
 
-	// 1. Fetch updates in parallel
 	for _, u := range updates {
 		wg.Add(1)
 		go p.fetchSingle(ctx, u, totalUpdates, &completed, &wg, &mu, &fetchedUpdates)
@@ -56,12 +54,11 @@ func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) ([]core.Ima
 		return nil, nil
 	}
 
-	// 2. Prompt (Interactive Auswahl) - JETZT mit den fertigen fetchedUpdates!
 	selectedUpdates := fetchedUpdates
 	if p.Prompter != nil {
 		selectedUpdates, err = p.Prompter.SelectUpdates(fetchedUpdates)
 		if err != nil {
-			return nil, err // z.B. wenn der User mit Ctrl+C abbricht
+			return nil, err
 		}
 	}
 
@@ -69,7 +66,6 @@ func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) ([]core.Ima
 		return nil, nil
 	}
 
-	// 3. Patch - Nur mit dem, was der User in der TUI ausgewählt hat!
 	err = p.Patcher.Patch(ctx, filePath, selectedUpdates)
 	if err != nil {
 		return nil, fmt.Errorf("failed to patch file %s: %w", filePath, err)
@@ -78,8 +74,8 @@ func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) ([]core.Ima
 	return selectedUpdates, nil
 }
 
-// fetchSingle kümmert sich isoliert um ein einziges Image.
-// Das senkt die cyclomatische Komplexität der Hauptmethode und kapselt Fehlerbehandlung und Timeouts.
+// fetchSingle handles a single image update in isolation.
+// This reduces the cyclomatic complexity of the main method and encapsulates error handling and timeouts.
 func (p *Pipeline) fetchSingle(
 	ctx context.Context,
 	update core.ImageUpdate,
@@ -91,13 +87,11 @@ func (p *Pipeline) fetchSingle(
 ) {
 	defer wg.Done()
 
-	// Eigener Timeout pro Image
 	imgCtx, cancel := context.WithTimeout(ctx, imageProcessingTimeout*time.Second)
 	defer cancel()
 
 	updated, err := p.Fetcher.FetchUpdate(imgCtx, update)
 
-	// Fortschritt thread-sicher um 1 erhöhen
 	currentProgress := atomic.AddInt32(completed, 1)
 
 	if err != nil {
@@ -106,7 +100,6 @@ func (p *Pipeline) fetchSingle(
 		return
 	}
 
-	// Visuelles Feedback für den Nutzer
 	fmt.Printf("\r✅ [%d/%d] Checked %s\n", currentProgress, total, update.ImageName)
 
 	if updated.Selected {

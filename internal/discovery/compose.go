@@ -20,23 +20,18 @@ func (c *ComposeDiscoverer) Discover(ctx context.Context, filePath string) ([]co
 		return nil, fmt.Errorf("failed to read file %s: %w", filePath, err)
 	}
 
-	// 1. Build the complete AST (preserves all meta information)
 	f, err := parser.ParseBytes(data, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse AST: %w", err)
 	}
 
-	// 2. YAMLPath: Get the "services" root node
-	// We avoid wildcards here because the YAMLPath parser is strict about them
 	path, err := yaml.PathString("$.services")
 	if err != nil {
 		return nil, fmt.Errorf("invalid YAMLPath: %w", err)
 	}
 
-	// Apply filter to the AST
 	node, err := path.FilterFile(f)
 	if err != nil {
-		// Nothing found or error during filtering -> return empty array
 		return []core.ImageUpdate{}, nil
 	}
 

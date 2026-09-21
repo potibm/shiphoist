@@ -46,7 +46,6 @@ func TestTagList_FilterBySuffix(t *testing.T) {
 }
 
 func TestTagList_SortBySemver(t *testing.T) {
-	// A messy list of tags in random order
 	rawTags := []string{"1.26.0-alpine", "1.24.0-alpine", "1.25.2-alpine", "1.25.0-alpine"}
 	tags := NewTagListFromStrings(rawTags)
 

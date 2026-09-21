@@ -36,7 +36,6 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 		options            []huh.Option[string]
 	)
 
-	// Optionen für das Formular aufbauen
 	for _, u := range updates {
 		label := fmt.Sprintf("%s (%s -> %s)", u.ImageName, u.OldTag, u.NewTag)
 		isSafeToAutoUpdate := u.UpdateType != core.UpdateTypeMajor
@@ -53,12 +52,10 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 		),
 	)
 
-	// TUI starten
 	if err := form.Run(); err != nil {
 		return nil, err
 	}
 
-	// Filtern: Nur die ausgewählten Updates zurückgeben
 	var filteredUpdates []core.ImageUpdate
 
 	for _, u := range updates {
@@ -82,7 +79,7 @@ func scoreUpdateType(t core.UpdateType) int {
 		return scoreMinor
 	case core.UpdateTypePatch:
 		return scorePatch
-	case core.UpdateTypeNone: // z.B. reiner Digest-Pin
+	case core.UpdateTypeNone:
 		return scoreNone
 	default:
 		return scoreOther

@@ -16,7 +16,7 @@ const (
 	cacheFilePermissions = 0o600
 )
 
-// CachedClient dekoriert einen RegistryClient mit einem Datei-basierten Cache.
+// CachedClient decorates a RegistryClient with a file-based cache.
 type CachedClient struct {
 	upstream     RegistryClient
 	cacheDir     string
@@ -26,7 +26,7 @@ type CachedClient struct {
 
 type cacheEntry struct {
 	Timestamp time.Time       `json:"timestamp"`
-	Data      json.RawMessage `json:"data"` // Flexible für []string oder string
+	Data      json.RawMessage `json:"data"`
 }
 
 func NewCachedClient(upstream RegistryClient, ttl time.Duration, forceRefresh bool) (*CachedClient, error) {
@@ -96,7 +96,6 @@ func (c *CachedClient) GetDigest(ctx context.Context, ref string) (string, error
 	return digest, nil
 }
 
-// --- Hilfsmethoden für I/O ---.
 func (c *CachedClient) cachePath(key string) string {
 	hash := sha256.Sum256([]byte(key))
 
