@@ -1,9 +1,10 @@
 [tools]
 go = "1.26"
-goreleaser = "latest"
+goreleaser = "2.18.2"
 golangci-lint = "latest"
-syft = "latest"
-"go:github.com/google/go-licenses" = "latest"
+syft = "1.52.0"
+"go:github.com/google/go-licenses" = "1.6.0"
+"go:github.com/icholy/gomajor" = "0.15.0"
 
 [tasks."dev"]
 description = "Runs the application"
@@ -12,10 +13,6 @@ run = "go run cmd/shiphoist/main.go"
 [tasks.test]
 description = "Runs all tests in the project"
 run = "go test ./..."
-
-[tasks.lint]
-description = "Runs golangci-lint"
-run = "golangci-lint run"
 
 [tasks."test:v"]
 description = "Runs all tests in the project with verbose output"
@@ -29,6 +26,27 @@ run = "go test -cover ./..."
 description = "Opens the HTML coverage report in the browser"
 run = "go tool cover -html=coverage.out"
 depends = ["test:cover"] 
+
+[tasks.lint]
+description = "Runs golangci-lint"
+run = "golangci-lint run"
+
+[tasks."lint:fix"]
+description = "Formats code standardly and runs linter auto-fixes"
+run = """
+go fmt ./...
+golangci-lint run --fix
+"""
+
+[tasks."deps:update"]
+description = "Update all dependencies across the project"
+run = """
+  mise up --bump --interactive
+  go get -u -t ./...
+  go mod tidy
+  gomajor list
+  npx actions-up
+"""
 
 [tasks."licenses:check"]
 description = "Checks if dependencies use allowed licenses"
