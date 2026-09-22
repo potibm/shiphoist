@@ -41,7 +41,7 @@ jobs:
         if: steps.release.outputs.releases_created == 'true'
         run: |
           go install github.com/google/go-licenses@latest
-          go-licenses save . --save_path=oss-licenses
+          go-licenses save ./... --save_path=./oss-licenses
 
       - name: Install Syft for SBOMs
         if: steps.release.outputs.releases_created == 'true'
