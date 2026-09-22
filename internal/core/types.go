@@ -2,7 +2,7 @@ package core
 
 import "context"
 
-// UpdateType describes the magnitude of the version jump
+// UpdateType describes the magnitude of the version jump.
 type UpdateType string
 
 const (
@@ -12,7 +12,7 @@ const (
 	UpdateTypeNone  UpdateType = "none"
 )
 
-// ImageUpdate carries the state of an update throughout the application
+// ImageUpdate carries the state of an update throughout the application.
 type ImageUpdate struct {
 	// Localization for surgical patching
 	FilePath   string
@@ -42,7 +42,7 @@ type ImageUpdate struct {
 // ---------------------------------------------------------
 
 // Discoverer finds images and their exact line numbers.
-// Implementations: ComposeDiscoverer, DockerfileDiscoverer
+// Implementations: ComposeDiscoverer, DockerfileDiscoverer.
 type Discoverer interface {
 	Discover(ctx context.Context, filePath string) ([]ImageUpdate, error)
 }

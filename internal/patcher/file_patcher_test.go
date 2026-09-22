@@ -39,15 +39,14 @@ services:
     environment:
       - POSTGRES_PASSWORD=secret`
 
-	// 1. Create a temporary file
 	tempDir := t.TempDir()
 	tempFile := filepath.Join(tempDir, "docker-compose.yaml")
-	err := os.WriteFile(tempFile, []byte(originalYAML), 0644)
+
+	err := os.WriteFile(tempFile, []byte(originalYAML), 0o600)
 	if err != nil {
 		t.Fatalf("failed to write temp file: %v", err)
 	}
 
-	// 2. Prepare mock updates (pretend the Discoverer and Fetcher already ran)
 	updates := []core.ImageUpdate{
 		{
 			LineNumber:     6, // Line with nginx
@@ -65,20 +64,18 @@ services:
 		},
 	}
 
-	// 3. Run the Patcher
 	patcher := &FilePatcher{}
+
 	err = patcher.Patch(context.Background(), tempFile, updates)
 	if err != nil {
 		t.Fatalf("unexpected error during Patch: %v", err)
 	}
 
-	// 4. Read back the file and compare
 	patchedData, err := os.ReadFile(tempFile)
 	if err != nil {
 		t.Fatalf("failed to read patched file: %v", err)
 	}
 
-	// Trim space to avoid newline issues at the end of the file during comparison
 	patchedStr := strings.TrimSpace(string(patchedData))
 	expectedStr := strings.TrimSpace(expectedYAML)
 

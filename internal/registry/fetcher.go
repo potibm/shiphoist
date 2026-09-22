@@ -12,6 +12,8 @@ import (
 	"github.com/potibm/shiphoist/internal/core"
 )
 
+const calVerThresholdYear = 1900
+
 type DefaultFetcher struct {
 	client RegistryClient
 }
@@ -24,6 +26,7 @@ func NewDefaultFetcher(client RegistryClient) *DefaultFetcher {
 
 func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpdate) (core.ImageUpdate, error) {
 	refString := fmt.Sprintf("%s:%s", current.ImageName, current.OldTag)
+
 	oldDigest, err := f.client.GetDigest(ctx, refString)
 	if err != nil {
 		var terr *transport.Error
@@ -42,21 +45,7 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 
 	oldParsed, err := ParseTag(current.OldTag)
 	if err != nil {
-		// Non-semver path: best-effort ListTags for accurate NoCompatibleTags
-		if current.OldTagMissing {
-			rawTags, listErr := f.client.ListTags(ctx, current.ImageName)
-			if listErr == nil {
-				allTags := NewTagListFromStrings(rawTags)
-				if len(allTags) == 0 {
-					current.NoCompatibleTags = true
-				}
-			}
-		}
-		if !current.OldTagMissing && current.OldDigest != current.CurrentDigest {
-			current.UpdateType = core.UpdateTypePatch
-			current.Selected = true
-		}
-		return current, nil
+		return f.handleNonSemverTag(ctx, current)
 	}
 
 	rawTags, err := f.client.ListTags(ctx, current.ImageName)
@@ -77,6 +66,7 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 
 	if len(candidates) == 0 {
 		current.NoCompatibleTags = true
+
 		return current, nil
 	}
 
@@ -87,15 +77,36 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 
 	candidates = candidates.SortBySemver()
 
-	isCalVer := oldParsed.SemVer.Major() >= 1900
+	isCalVer := oldParsed.SemVer.Major() >= calVerThresholdYear
+	sameMajor, majorBump := f.classifyCandidates(candidates, oldParsed, isCalVer)
 
-	var sameMajor TagList
-	var majorBump *Tag
+	if len(sameMajor) > 0 {
+		f.processSameMajorUpdate(ctx, &current, sameMajor, oldParsed)
+	}
+
+	// Successor rule: when tag is missing and no greater same-major candidate,
+	// look for a coarser-precision tag that's a version prefix of the current tag
+	if current.OldTagMissing && !current.Selected {
+		f.applySuccessorRule(ctx, &current, baseCandidates, oldParsed, isCalVer)
+	}
+
+	if majorBump != nil {
+		current.MajorTag = majorBump.Raw
+	}
+
+	return current, nil
+}
+
+func (f *DefaultFetcher) classifyCandidates(candidates TagList, oldParsed Tag, isCalVer bool) (TagList, *Tag) {
+	var (
+		sameMajor TagList
+		majorBump *Tag
+	)
+
 	for i := range candidates {
 		tag := &candidates[i]
-		tagIsCalVer := tag.SemVer.Major() >= 1900
+		tagIsCalVer := tag.SemVer.Major() >= calVerThresholdYear
 
-		// CalVer boundary: only consider candidates within the same schema
 		if isCalVer != tagIsCalVer {
 			continue
 		}
@@ -107,66 +118,7 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 		}
 	}
 
-	if len(sameMajor) > 0 {
-		safeNewest := sameMajor[len(sameMajor)-1]
-		if safeNewest.SemVer.GreaterThan(oldParsed.SemVer) {
-			current.NewTag = safeNewest.Raw
-			current.Selected = true
-
-			if safeNewest.SemVer.Minor() > oldParsed.SemVer.Minor() {
-				current.UpdateType = core.UpdateTypeMinor
-			} else {
-				current.UpdateType = core.UpdateTypePatch
-			}
-
-			newRefString := fmt.Sprintf("%s:%s", current.ImageName, current.NewTag)
-			if newDigest, err := f.client.GetDigest(ctx, newRefString); err == nil {
-				current.NewDigest = newDigest
-			}
-		}
-	}
-
-	// Successor rule: when tag is missing and no greater same-major candidate,
-	// look for a coarser-precision tag that's a version prefix of the current tag
-	if current.OldTagMissing && !current.Selected {
-		// Use baseCandidates (any precision) for successor search
-		successorCandidates := baseCandidates.FilterByVPrefix(oldParsed.HasVPrefix).SortBySemver()
-		var successorSameMajor TagList
-		for i := range successorCandidates {
-			tag := &successorCandidates[i]
-			tagIsCalVer := tag.SemVer.Major() >= 1900
-			if isCalVer != tagIsCalVer {
-				continue
-			}
-			if tag.SemVer.Major() == oldParsed.SemVer.Major() {
-				successorSameMajor = append(successorSameMajor, *tag)
-			}
-		}
-
-		if len(successorSameMajor) > 0 {
-			for i := len(successorSameMajor) - 1; i >= 0; i-- {
-				candidate := successorSameMajor[i]
-				// Check if candidate is a version prefix of current (e.g., "22.04" is prefix of "22.04.2")
-				if strings.HasPrefix(current.OldTag, candidate.Raw+".") {
-					current.NewTag = candidate.Raw
-					current.Selected = true
-					current.UpdateType = core.UpdateTypePatch
-
-					newRefString := fmt.Sprintf("%s:%s", current.ImageName, current.NewTag)
-					if newDigest, err := f.client.GetDigest(ctx, newRefString); err == nil {
-						current.NewDigest = newDigest
-					}
-					break
-				}
-			}
-		}
-	}
-
-	if majorBump != nil {
-		current.MajorTag = majorBump.Raw
-	}
-
-	return current, nil
+	return sameMajor, majorBump
 }
 
 // listTags fetches all available tags for a given image repository.
@@ -177,4 +129,96 @@ func (f *DefaultFetcher) listTags(ctx context.Context, imageName string) (TagLis
 	}
 
 	return NewTagListFromStrings(rawTags), nil
+}
+
+func (f *DefaultFetcher) handleNonSemverTag(ctx context.Context, current core.ImageUpdate) (core.ImageUpdate, error) {
+	if current.OldTagMissing {
+		rawTags, listErr := f.client.ListTags(ctx, current.ImageName)
+		if listErr == nil {
+			allTags := NewTagListFromStrings(rawTags)
+			if len(allTags) == 0 {
+				current.NoCompatibleTags = true
+			}
+		}
+	}
+
+	if !current.OldTagMissing && current.OldDigest != current.CurrentDigest {
+		current.UpdateType = core.UpdateTypePatch
+		current.Selected = true
+	}
+
+	return current, nil
+}
+
+func (f *DefaultFetcher) processSameMajorUpdate(
+	ctx context.Context,
+	current *core.ImageUpdate,
+	sameMajor TagList,
+	oldParsed Tag,
+) {
+	safeNewest := sameMajor[len(sameMajor)-1]
+	if !safeNewest.SemVer.GreaterThan(oldParsed.SemVer) {
+		return
+	}
+
+	current.NewTag = safeNewest.Raw
+	current.Selected = true
+
+	if safeNewest.SemVer.Minor() > oldParsed.SemVer.Minor() {
+		current.UpdateType = core.UpdateTypeMinor
+	} else {
+		current.UpdateType = core.UpdateTypePatch
+	}
+
+	newRefString := fmt.Sprintf("%s:%s", current.ImageName, current.NewTag)
+	if newDigest, err := f.client.GetDigest(ctx, newRefString); err == nil {
+		current.NewDigest = newDigest
+	}
+}
+
+func (f *DefaultFetcher) applySuccessorRule(
+	ctx context.Context,
+	current *core.ImageUpdate,
+	baseCandidates TagList,
+	oldParsed Tag,
+	isCalVer bool,
+) {
+	successorCandidates := baseCandidates.FilterByVPrefix(oldParsed.HasVPrefix).SortBySemver()
+
+	var successorSameMajor TagList
+
+	for i := range successorCandidates {
+		tag := &successorCandidates[i]
+
+		tagIsCalVer := tag.SemVer.Major() >= calVerThresholdYear
+		if isCalVer != tagIsCalVer {
+			continue
+		}
+
+		if tag.SemVer.Major() == oldParsed.SemVer.Major() {
+			successorSameMajor = append(successorSameMajor, *tag)
+		}
+	}
+
+	if len(successorSameMajor) == 0 {
+		return
+	}
+
+	for i := len(successorSameMajor) - 1; i >= 0; i-- {
+		candidate := successorSameMajor[i]
+		if !strings.HasPrefix(current.OldTag, candidate.Raw+".") {
+			continue
+		}
+
+		current.NewTag = candidate.Raw
+		current.Selected = true
+		current.UpdateType = core.UpdateTypePatch
+
+		newRefString := fmt.Sprintf("%s:%s", current.ImageName, current.NewTag)
+		if newDigest, err := f.client.GetDigest(ctx, newRefString); err == nil {
+			current.NewDigest = newDigest
+		}
+
+		break
+	}
 }

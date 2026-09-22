@@ -1,4 +1,3 @@
-// internal/registry/client.go
 package registry
 
 import (
@@ -9,13 +8,13 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
-// RegistryClient kapselt die reinen I/O-Aufrufe an die Container Registry.
+// RegistryClient encapsulates the pure I/O calls to the container registry.
 type RegistryClient interface {
 	ListTags(ctx context.Context, repo string) ([]string, error)
 	GetDigest(ctx context.Context, ref string) (string, error)
 }
 
-// RemoteClient ist die direkte, ungecachte Implementierung.
+// RemoteClient is the direct, uncached implementation.
 type RemoteClient struct{}
 
 func NewRemoteClient() *RemoteClient {
@@ -27,6 +26,7 @@ func (c *RemoteClient) ListTags(ctx context.Context, repoName string) ([]string,
 	if err != nil {
 		return nil, err
 	}
+
 	return remote.List(repo, remote.WithAuthFromKeychain(authn.DefaultKeychain), remote.WithContext(ctx))
 }
 
@@ -35,9 +35,11 @@ func (c *RemoteClient) GetDigest(ctx context.Context, refString string) (string,
 	if err != nil {
 		return "", err
 	}
+
 	desc, err := remote.Head(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain), remote.WithContext(ctx))
 	if err != nil {
 		return "", err
 	}
+
 	return desc.Digest.String(), nil
 }

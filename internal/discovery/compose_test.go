@@ -37,14 +37,15 @@ services:
 
 	tempDir := t.TempDir()
 	tempFile := filepath.Join(tempDir, "docker-compose.yaml")
-	err := os.WriteFile(tempFile, []byte(yamlContent), 0644)
+
+	err := os.WriteFile(tempFile, []byte(yamlContent), 0o600)
 	if err != nil {
 		t.Fatalf("could not write temp file: %v", err)
 	}
 
 	discoverer := &ComposeDiscoverer{}
-	updates, err := discoverer.Discover(context.Background(), tempFile)
 
+	updates, err := discoverer.Discover(context.Background(), tempFile)
 	if err != nil {
 		t.Fatalf("unexpected error during Discover: %v", err)
 	}
@@ -88,17 +89,27 @@ services:
 		got := updates[i]
 
 		if got.LineNumber != exp.LineNumber {
-			t.Errorf("Update %d (%s): wrong line number. Expected %d, got %d", i, exp.ImageName, exp.LineNumber, got.LineNumber)
+			t.Errorf(
+				"Update %d (%s): wrong line number. Expected %d, got %d",
+				i,
+				exp.ImageName,
+				exp.LineNumber,
+				got.LineNumber,
+			)
 		}
+
 		if got.ImageName != exp.ImageName {
 			t.Errorf("Update %d: wrong image name. Expected %s, got %s", i, exp.ImageName, got.ImageName)
 		}
+
 		if got.OldTag != exp.OldTag {
 			t.Errorf("Update %d: wrong tag. Expected %s, got %s", i, exp.OldTag, got.OldTag)
 		}
+
 		if got.OldDigest != exp.OldDigest {
 			t.Errorf("Update %d: wrong old digest. Expected %s, got %s", i, exp.OldDigest, got.OldDigest)
 		}
+
 		if got.OriginalString != exp.OriginalString {
 			t.Errorf("Update %d: wrong original string. Expected %s, got %s", i, exp.OriginalString, got.OriginalString)
 		}
