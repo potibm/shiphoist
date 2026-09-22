@@ -1,3 +1,10 @@
+## [0.1.1-rc.2](https://github.com/potibm/shiphoist/compare/v0.1.1-rc.1...v0.1.1-rc.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* allow manual release ([ecdeee4](https://github.com/potibm/shiphoist/commit/ecdeee454a43743fc3a258059573b9ce0ac6ef3e))
+
 ## [0.1.1-rc.1](https://github.com/potibm/shiphoist/compare/v0.1.0...v0.1.1-rc.1) (2026-09-21)
 
 
