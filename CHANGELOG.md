@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/potibm/shiphoist/compare/v0.1.2...v0.1.3) (2026-09-22)
+
+
+### Bug Fixes
+
+* pass version/commit/date correctly ([#11](https://github.com/potibm/shiphoist/issues/11)) ([9e1eed6](https://github.com/potibm/shiphoist/commit/9e1eed6b715b42c1f1894713fe00732ddba36782))
+
 ## [0.1.2](https://github.com/potibm/shiphoist/compare/v0.1.1...v0.1.2) (2026-09-22)
 
 
