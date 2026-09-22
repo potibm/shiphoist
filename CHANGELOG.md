@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/potibm/shiphoist/compare/v0.1.1...v0.1.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* go-licenses correct directory ([#9](https://github.com/potibm/shiphoist/issues/9)) ([c7d19cd](https://github.com/potibm/shiphoist/commit/c7d19cd0728bfa8c1057256580bf2768ae303e1a))
+
 ## [0.1.1](https://github.com/potibm/shiphoist/compare/v0.1.0...v0.1.1) (2026-09-22)
 
 
