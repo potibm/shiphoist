@@ -42,6 +42,13 @@ Pipeline flow: `Discoverer → Fetcher → Prompter → Patcher` (orchestrated b
 - Registry client uses file-based cache (`internal/registry/cache.go`)
 - TUI uses `charmbracelet/huh` for interactive selection
 - Major updates are not pre-selected (safety feature)
+  
+## Documentation & Project Sync
+
+Always keep project documentation aligned with code changes:
+- **`TODO.md`**: Check off completed tasks (`- [x]`) and add newly identified requirements or technical debt before concluding a task.
+- **`DESIGN.md`**: Update when modifying core data structures (`core.ImageUpdate`), interfaces (`Discoverer`, `RegistryFetcher`, etc.), or architectural boundaries.
+- **`README.md`**: Update immediately when flags, CLI commands, default behaviors, or user-facing features change.
 
 ## Testing
 
