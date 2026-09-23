@@ -47,7 +47,7 @@ func main() {
 
 	rootCmd := &cobra.Command{
 		Use:   "shiphoist [path-to-docker-compose.yml]",
-		Short: "A high-performance Go CLI tool to update Docker images",
+		Short: "Interactively update and SHA256-pin Docker images in Compose files",
 		Args:  cobra.ExactArgs(1),
 		Run:   runRootCommand(&forceRefresh),
 	}
