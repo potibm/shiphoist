@@ -54,7 +54,7 @@ For pipelines, Makefiles, or automation. Will skip the UI and immediately apply 
 To avoid the weaknesses of pure AST parsers (destroy formatting/comments) and dumb regex scanners (false positives), *shiphoist* uses a two-stage hybrid approach:
 
 1. **Discovery Phase (Parser):**
-   Real parsers (`github.com/goccy/go-yaml` for Compose, `moby/buildkit` for Dockerfiles) read the file and find validated images. The parser provides the **exact line number**.
+   Real parsers read the file and find validated images. The parser provides the **exact line number**. Compose files are parsed with `github.com/goccy/go-yaml` into an AST. Dockerfiles are not parsed with a dedicated dependency — a hand-rolled line scanner handles them, which keeps the module graph small and yields line numbers directly.
 2. **Patching Phase (Regex/Line-Scanner):**
    The file is read as raw text. A patcher jumps precisely to the determined line number and performs the regex replacement of the tag *only there*.
 
