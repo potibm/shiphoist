@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/potibm/shiphoist/compare/v0.1.4...v0.2.0) (2026-09-26)
+
+
+### Features
+
+* **ui:** add progress bar, tabular TUI and fetch deduplication ([#15](https://github.com/potibm/shiphoist/issues/15)) ([7eb9845](https://github.com/potibm/shiphoist/commit/7eb984571ae9c7620dc0772da8b7e6ccb7f99c9b))
+
 ## [0.1.4](https://github.com/potibm/shiphoist/compare/v0.1.3...v0.1.4) (2026-09-23)
 
 
