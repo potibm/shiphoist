@@ -29,10 +29,28 @@ jobs:
           version: latest
 
       - name: Test & Coverage
-        run: go test -v -coverprofile=coverage.out ./...
+        run: go test -v -short -coverprofile=coverage.out ./...
+
+      - name: Test (race detector)
+        run: go test -short -race ./...
 
       - name: SonarQube Scan
         if: ${{ github.actor != 'dependabot[bot]' && env.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  integration:
+    # Live-registry smoke tests. Network flakiness here must not block PRs,
+    # so failures are tolerated; the unit suite above is the real gate.
+    runs-on: ubuntu-26.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Integration tests (live registries)
+        run: go test -v -run Integration ./internal/registry/...

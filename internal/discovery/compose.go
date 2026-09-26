@@ -60,19 +60,49 @@ func (c *ComposeDiscoverer) extractImagesFromMapping(v *ast.MappingNode, updates
 			continue
 		}
 
+		serviceName := serviceNameOf(service)
+
 		for _, prop := range serviceDef.Values {
 			key, ok := prop.Key.(*ast.StringNode)
 			if !ok || key.Value != "image" {
 				continue
 			}
 
-			*updates = append(*updates, extractImageUpdate(prop.Value, filePath))
+			if isNullNode(prop.Value) {
+				continue
+			}
+
+			*updates = append(*updates, extractImageUpdate(prop.Value, filePath, serviceName))
 		}
 	}
 }
 
+// isNullNode reports whether a value carries no reference at all, as in
+// `image:` with nothing after it. Without this guard the literal text "null"
+// would be treated as an image name and written back into the file.
+func isNullNode(node ast.Node) bool {
+	if _, ok := node.(*ast.NullNode); ok {
+		return true
+	}
+
+	tkn := node.GetToken()
+
+	return tkn == nil || tkn.Value == ""
+}
+
+// serviceNameOf returns the Compose service key, or an empty string when the
+// mapping key is not a plain scalar.
+func serviceNameOf(service *ast.MappingValueNode) string {
+	key, ok := service.Key.(*ast.StringNode)
+	if !ok {
+		return ""
+	}
+
+	return key.Value
+}
+
 // Helper function to extract metadata cleanly from the node.
-func extractImageUpdate(node ast.Node, filePath string) core.ImageUpdate {
+func extractImageUpdate(node ast.Node, filePath, serviceName string) core.ImageUpdate {
 	token := node.GetToken()
 	originalString := token.Value
 	lineNumber := token.Position.Line
@@ -82,6 +112,7 @@ func extractImageUpdate(node ast.Node, filePath string) core.ImageUpdate {
 	return core.ImageUpdate{
 		FilePath:       filePath,
 		LineNumber:     lineNumber,
+		ServiceName:    serviceName,
 		OriginalString: originalString,
 		ImageName:      imageName,
 		OldTag:         oldTag,

@@ -14,6 +14,7 @@ import (
 	"github.com/potibm/shiphoist/internal/patcher"
 	"github.com/potibm/shiphoist/internal/registry"
 	"github.com/potibm/shiphoist/internal/tui"
+	"github.com/potibm/shiphoist/internal/ui"
 )
 
 var (
@@ -22,10 +23,7 @@ var (
 	Date    = "unknown"
 )
 
-const (
-	cacheTTLMinutes   = 15
-	shortDigestLength = 16
-)
+const cacheTTLMinutes = 15
 
 func buildFetcher(forceRefresh bool) (core.RegistryFetcher, error) {
 	cacheTTL := cacheTTLMinutes * time.Minute
@@ -43,16 +41,21 @@ func buildFetcher(forceRefresh bool) (core.RegistryFetcher, error) {
 }
 
 func main() {
-	var forceRefresh bool
+	var (
+		forceRefresh bool
+		verbose      bool
+	)
 
 	rootCmd := &cobra.Command{
 		Use:   "shiphoist [path-to-docker-compose.yml]",
 		Short: "Interactively update and SHA256-pin Docker images in Compose files",
 		Args:  cobra.ExactArgs(1),
-		Run:   runRootCommand(&forceRefresh),
+		Run:   runRootCommand(&forceRefresh, &verbose),
 	}
 
 	rootCmd.PersistentFlags().BoolVarP(&forceRefresh, "force", "f", false, "Force refresh by bypassing the local cache")
+	rootCmd.PersistentFlags().
+		BoolVarP(&verbose, "verbose", "v", false, "Report one line per image instead of a single progress bar")
 	rootCmd.Version = fmt.Sprintf("%s (Commit: %s, Date: %s)", Version, Commit, Date)
 
 	checkCmd := &cobra.Command{
@@ -71,7 +74,7 @@ Example: shiphoist check ghcr.io/potibm/kasseapparat:2.18.0`,
 	}
 }
 
-func runRootCommand(forceRefresh *bool) func(cmd *cobra.Command, args []string) {
+func runRootCommand(forceRefresh, verbose *bool) func(cmd *cobra.Command, args []string) {
 	return func(cmd *cobra.Command, args []string) {
 		filePath := args[0]
 
@@ -89,6 +92,7 @@ func runRootCommand(forceRefresh *bool) func(cmd *cobra.Command, args []string) 
 			Fetcher:    activeFetcher,
 			Patcher:    &patcher.FilePatcher{},
 			Prompter:   tui.NewHuhPrompter(),
+			Verbose:    *verbose,
 		}
 
 		if *forceRefresh {
@@ -113,9 +117,9 @@ func runRootCommand(forceRefresh *bool) func(cmd *cobra.Command, args []string) 
 
 		for _, u := range updates {
 			if u.UpdateType == core.UpdateTypeNone {
-				fmt.Printf("  📌 %s: pinned to new digest\n", u.ImageName)
+				fmt.Printf("  📌 %s: pinned to new digest\n", u.Label())
 			} else {
-				fmt.Printf("  🚀 %s: %s -> %s (%s)\n", u.ImageName, u.OldTag, u.NewTag, u.UpdateType)
+				fmt.Printf("  🚀 %s: %s -> %s (%s)\n", u.Label(), u.OldTag, u.NewTag, u.UpdateType)
 			}
 		}
 	}
@@ -155,7 +159,7 @@ func runCheckCommand(forceRefresh *bool) func(cmd *cobra.Command, args []string)
 }
 
 func printCheckResult(updated core.ImageUpdate) {
-	fmt.Printf("📦 Image:  %s\n", updated.ImageName)
+	fmt.Printf("📦 Image:  %s\n", updated.Label())
 
 	printCurrentTagInfo(updated)
 	printLatestTagInfo(updated)
@@ -175,11 +179,11 @@ func printCurrentTagInfo(updated core.ImageUpdate) {
 	fmt.Printf("🏷  Current: %s", updated.OldTag)
 
 	if updated.CurrentDigest != "" {
-		fmt.Printf(" (digest: %s)", shortDigest(updated.CurrentDigest))
+		fmt.Printf(" (digest: %s)", ui.ShortDigest(updated.CurrentDigest))
 	}
 
 	if updated.OldDigest != "" && updated.OldDigest != updated.CurrentDigest {
-		fmt.Printf(" [pinned: %s]", shortDigest(updated.OldDigest))
+		fmt.Printf(" [pinned: %s]", ui.ShortDigest(updated.OldDigest))
 	}
 
 	fmt.Println()
@@ -191,12 +195,12 @@ func printLatestTagInfo(updated core.ImageUpdate) {
 		fmt.Printf("🚀 Latest:  %s (%s)", updated.NewTag, updated.UpdateType)
 
 		if updated.NewDigest != "" {
-			fmt.Printf(" (digest: %s)", shortDigest(updated.NewDigest))
+			fmt.Printf(" (digest: %s)", ui.ShortDigest(updated.NewDigest))
 		}
 
 		fmt.Println()
 	case updated.Selected && updated.NewTag == updated.OldTag:
-		fmt.Printf("📌 Pin to digest: %s\n", shortDigest(updated.NewDigest))
+		fmt.Printf("📌 Pin to digest: %s\n", ui.ShortDigest(updated.NewDigest))
 	case updated.UpdateType == core.UpdateTypeNone && updated.NewTag == updated.OldTag:
 		printUpToDateStatus(updated)
 	default:
@@ -213,12 +217,4 @@ func printUpToDateStatus(updated core.ImageUpdate) {
 	default:
 		fmt.Println("✅ Up to date!")
 	}
-}
-
-func shortDigest(digest string) string {
-	if len(digest) > shortDigestLength {
-		return digest[:shortDigestLength] + "..."
-	}
-
-	return digest
 }

@@ -1,5 +1,5 @@
 [tools]
-go = "1.26"
+go = "1.27"
 goreleaser = "2.18.2"
 golangci-lint = "latest"
 syft = "1.52.0"
@@ -12,15 +12,23 @@ run = "go run cmd/shiphoist/main.go"
 
 [tasks.test]
 description = "Runs all tests in the project"
-run = "go test ./..."
+run = "go test -short ./..."
 
 [tasks."test:v"]
 description = "Runs all tests in the project with verbose output"
-run = "go test -v ./..."
+run = "go test -v -short ./..."
+
+[tasks."test:all"]
+description = "Runs all tests including the live-registry integration tests (requires network)"
+run = "go test ./..."
+
+[tasks."test:race"]
+description = "Runs all tests with the race detector"
+run = "go test -short -race ./..."
 
 [tasks."test:cover"]
-description = "Runs all tests in the project with coverage"
-run = "go test -cover ./..."
+description = "Runs all tests in the project and writes coverage.out"
+run = "go test -short -coverprofile=coverage.out ./..."
 
 [tasks."test:cover-view"]
 description = "Opens the HTML coverage report in the browser"

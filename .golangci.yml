@@ -75,22 +75,10 @@ linters:
       - (^|/)third_party(/|$)
       - (^|/)builtin(/|$)
     rules:
-      - path: tests/e2e/init_test_sumup.go
-        linters:
-          - mnd
-      - path: internal/app/utils/seed.go
-        linters:
-          - mnd
       - path: _test\.go$
         linters:
           - gosec
         text: "G101"
-      - path: '.*/handlers_admin_.*\.go$'
-        linters:
-          - dupl
-      - path: '.*/.*_repository\.go$'
-        linters:
-          - dupl
 formatters:
   enable:
     - golines

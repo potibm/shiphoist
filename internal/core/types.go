@@ -1,6 +1,9 @@
 package core
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // UpdateType describes the magnitude of the version jump.
 type UpdateType string
@@ -17,6 +20,10 @@ type ImageUpdate struct {
 	// Localization for surgical patching
 	FilePath   string
 	LineNumber int
+
+	// Identity of the declaration site. Empty for formats without named
+	// services (e.g. a Dockerfile stage).
+	ServiceName string
 
 	// Current state
 	OriginalString string
@@ -35,6 +42,31 @@ type ImageUpdate struct {
 	CurrentDigest    string // Registry-resolved digest of the current (old) tag
 	NoCompatibleTags bool   // True if ListTags succeeded but no SemVer-compatible candidates found
 	MajorTag         string // Newest tag if it's a major bump (not auto-selected)
+}
+
+// Key uniquely identifies an update by its declaration site.
+//
+// The image name alone is not unique: the same repository may appear in
+// several services with different tags, and keying on it would make
+// deselecting one of them apply to all of them. FilePath and LineNumber are
+// also how the Patcher addresses the line, so selection and patching can
+// never disagree.
+func (u ImageUpdate) Key() string {
+	if u.FilePath == "" && u.LineNumber == 0 {
+		return u.ImageName
+	}
+
+	return fmt.Sprintf("%s:%d", u.FilePath, u.LineNumber)
+}
+
+// Label renders the image for user-facing output, prefixed with the service
+// name when the source format provides one.
+func (u ImageUpdate) Label() string {
+	if u.ServiceName == "" {
+		return u.ImageName
+	}
+
+	return fmt.Sprintf("[%s] %s", u.ServiceName, u.ImageName)
 }
 
 // ---------------------------------------------------------
@@ -59,6 +91,9 @@ type Patcher interface {
 	Patch(ctx context.Context, filePath string, updates []ImageUpdate) error
 }
 
+// Prompter lets the user choose which discovered updates to apply.
+// Implementations must identify updates by ImageUpdate.Key, never by image
+// name, so that two services sharing a repository stay independent.
 type Prompter interface {
 	SelectUpdates(updates []ImageUpdate) ([]ImageUpdate, error)
 }
