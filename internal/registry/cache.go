@@ -29,20 +29,32 @@ type cacheEntry struct {
 	Data      json.RawMessage `json:"data"`
 }
 
+// NewCachedClient decorates upstream with a file-based cache stored under the
+// user's cache directory.
 func NewCachedClient(upstream RegistryClient, ttl time.Duration, forceRefresh bool) (*CachedClient, error) {
 	userCache, err := os.UserCacheDir()
 	if err != nil {
 		return nil, err
 	}
 
-	cacheDir := filepath.Join(userCache, "shiphoist")
-	if err := os.MkdirAll(cacheDir, cacheDirPermissions); err != nil {
+	return NewCachedClientInDir(upstream, filepath.Join(userCache, "shiphoist"), ttl, forceRefresh)
+}
+
+// NewCachedClientInDir is NewCachedClient with an explicit directory, so tests
+// do not have to manipulate the environment to redirect the cache location.
+func NewCachedClientInDir(
+	upstream RegistryClient,
+	dir string,
+	ttl time.Duration,
+	forceRefresh bool,
+) (*CachedClient, error) {
+	if err := os.MkdirAll(dir, cacheDirPermissions); err != nil {
 		return nil, err
 	}
 
 	return &CachedClient{
 		upstream:     upstream,
-		cacheDir:     cacheDir,
+		cacheDir:     dir,
 		ttl:          ttl,
 		forceRefresh: forceRefresh,
 	}, nil

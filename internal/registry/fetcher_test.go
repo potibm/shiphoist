@@ -24,96 +24,100 @@ func (m *mockClient) ListTags(ctx context.Context, repo string) ([]string, error
 	return m.listTagsFn(ctx, repo)
 }
 
-func TestDefaultFetcher_FetchUpdate(t *testing.T) {
-	fetcher := NewDefaultFetcher(NewRemoteClient())
+func TestDefaultFetcher_FetchUpdate_SemverUpgrade(t *testing.T) {
+	// Mirrors the historical live-registry test for alpine, but with a fixed
+	// tag list so the result is deterministic.
+	testFetchUpdate(t, fetchUpdateTestCase{
+		name:           "SemVer upgrade",
+		imageName:      "alpine",
+		oldTag:         "3.17.0",
+		oldDigestRef:   "alpine:3.17.0",
+		tags:           []string{"3.16.3", "3.17.0", "3.17.3", "3.18.4"},
+		expectedNewTag: "3.18.4",
+		expectedType:   core.UpdateTypeMinor,
+		expectedMajor:  "",
+	})
+}
 
-	// Start with an intentionally old Alpine tag
-	current := core.ImageUpdate{
-		ImageName: "alpine",
-		OldTag:    "3.17.0",
-		OldDigest: "",
-	}
-
-	updated, err := fetcher.FetchUpdate(context.Background(), current)
-	if err != nil {
-		t.Fatalf("unexpected error during registry fetch: %v", err)
-	}
-
-	// We expect the tool to find a newer version (e.g., 3.17.3 or 3.20.0 depending on the suffix match logic)
-	// Since 3.17.0 has no suffix, it will match all other tags without a suffix and find the absolute latest.
-	if updated.NewTag == "3.17.0" {
-		t.Errorf("expected tag to be updated, but it remained '3.17.0'")
-	}
-
-	if updated.UpdateType == core.UpdateTypeNone {
-		t.Errorf("expected an update type to be set, got None")
-	}
-
-	if updated.NewDigest == "" {
-		t.Error("expected a valid new digest, got an empty string")
-	}
-
-	t.Logf("Successfully found update for alpine:3.17.0 -> %s (%s)", updated.NewTag, updated.UpdateType)
+func TestDefaultFetcher_FetchUpdate_SuffixlessPicksAbsoluteLatest(t *testing.T) {
+	// A tag without a flavor suffix matches every other suffixless tag, so the
+	// absolute latest wins regardless of magnitude.
+	testFetchUpdate(t, fetchUpdateTestCase{
+		name:           "suffixless absolute latest",
+		imageName:      "alpine",
+		oldTag:         "3.17.0",
+		oldDigestRef:   "alpine:3.17.0",
+		tags:           []string{"3.17.0", "3.18.4"},
+		expectedNewTag: "3.18.4",
+		expectedType:   core.UpdateTypeMinor,
+		expectedMajor:  "",
+	})
 }
 
 func TestDefaultFetcher_FetchUpdate_NonSemverFallback(t *testing.T) {
-	fetcher := NewDefaultFetcher(NewRemoteClient())
+	mock := &mockClient{
+		getDigestFn: func(ctx context.Context, ref string) (string, error) {
+			return "sha256:latest-digest", nil
+		},
+		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
+			return []string{"latest", "stable", "1.25.0"}, nil
+		},
+	}
 
-	// We use "latest", which is definitively not valid SemVer
+	fetcher := NewDefaultFetcher(mock)
+
 	current := core.ImageUpdate{
 		ImageName: "nginx",
 		OldTag:    "latest",
-		OldDigest: "",
 	}
 
 	updated, err := fetcher.FetchUpdate(context.Background(), current)
 	if err != nil {
-		t.Fatalf("unexpected error during registry fetch: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// We expect the tag to remain exactly the same ("latest")
 	if updated.NewTag != "latest" {
-		t.Errorf("expected tag to remain 'latest', but got '%s'", updated.NewTag)
+		t.Errorf("expected tag to remain 'latest', got %q", updated.NewTag)
 	}
 
-	// We expect it to have fetched a valid digest for the latest tag
-	if updated.NewDigest == "" {
-		t.Error("expected a valid new digest, got an empty string")
+	if updated.NewDigest != "sha256:latest-digest" {
+		t.Errorf("expected the floating tag to be pinned, got digest %q", updated.NewDigest)
 	}
 
-	t.Logf("Successfully pinned non-semver tag nginx:latest to digest %s", updated.NewDigest)
+	if !updated.Selected {
+		t.Error("expected Selected to be true for an unpinned floating tag")
+	}
 }
 
 func TestDefaultFetcher_ListTags(t *testing.T) {
-	fetcher := NewDefaultFetcher(NewRemoteClient())
+	mock := &mockClient{
+		getDigestFn: func(ctx context.Context, ref string) (string, error) {
+			return "sha256:unused", nil
+		},
+		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
+			return []string{"3.18", "3.18.4", "latest"}, nil
+		},
+	}
 
-	// Call the registry to list tags for the "alpine" image
+	fetcher := NewDefaultFetcher(mock)
+
 	tags, err := fetcher.listTags(context.Background(), "alpine")
 	if err != nil {
 		t.Fatalf("unexpected error listing tags: %v", err)
 	}
 
-	// We expect Alpine to have at least some tags
-	if len(tags) == 0 {
-		t.Fatal("expected a list of tags, but got an empty list")
+	// "latest" is not valid SemVer and is deliberately dropped, so that
+	// floating tags never win an automatic version comparison.
+	expected := []string{"3.18", "3.18.4"}
+	if len(tags) != len(expected) {
+		t.Fatalf("expected %d tags, got %d", len(expected), len(tags))
 	}
 
-	// Let's look for a tag we know definitely exists
-	found := false
-
-	for _, tag := range tags {
-		if tag.Raw == "3.18" {
-			found = true
-
-			break
+	for i, raw := range expected {
+		if tags[i].Raw != raw {
+			t.Errorf("tag %d: expected %q, got %q", i, raw, tags[i].Raw)
 		}
 	}
-
-	if !found {
-		t.Errorf("expected to find tag '3.18' in the list, but it was missing. Got %d total tags.", len(tags))
-	}
-
-	t.Logf("Successfully fetched %d tags for alpine", len(tags))
 }
 
 func TestDefaultFetcher_FetchUpdate_MissingTag(t *testing.T) {
@@ -527,6 +531,7 @@ type fetchUpdateTestCase struct {
 	oldDigestRef   string
 	tags           []string
 	expectedNewTag string
+	expectedType   core.UpdateType
 	expectedMajor  string
 }
 
@@ -564,6 +569,10 @@ func testFetchUpdate(t *testing.T, tc fetchUpdateTestCase) {
 
 	if !updated.Selected {
 		t.Error("expected Selected to be true")
+	}
+
+	if tc.expectedType != "" && updated.UpdateType != tc.expectedType {
+		t.Errorf("expected UpdateType to be %s, got %s", tc.expectedType, updated.UpdateType)
 	}
 
 	if updated.MajorTag != tc.expectedMajor {

@@ -1,5 +1,6 @@
 architecture.md
 TODO.md
+coverage.out
 dist/
 docker-compose.yml
 test/*.log
