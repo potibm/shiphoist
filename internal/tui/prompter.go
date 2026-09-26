@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -47,10 +48,39 @@ func (g updateGroup) safeToApply() bool {
 	return g.Head.UpdateType != core.UpdateTypeMajor
 }
 
-type HuhPrompter struct{}
+// formRunner renders a built form and returns once it is confirmed or aborted.
+type formRunner func(form *huh.Form) error
+
+// runInteractive renders the form against the real terminal.
+func runInteractive(form *huh.Form) error {
+	return form.Run()
+}
+
+// runFrom renders the form in accessible mode, drawing to out and reading keys
+// from in.
+//
+// Accessible mode is the only way to drive a huh form without a terminal: it
+// prints a numbered list and reads line input instead of raw keystrokes. A
+// blank line confirms whatever is currently selected, which is what lets a test
+// assert on the defaults shiphoist preselects.
+func runFrom(in io.Reader, out io.Writer) formRunner {
+	return func(form *huh.Form) error {
+		form.WithAccessible(true).WithInput(in).WithOutput(out)
+
+		return form.Run()
+	}
+}
+
+type HuhPrompter struct {
+	// run renders each form. Defaults to runInteractive.
+	run formRunner
+
+	// width is the column budget for the table. Zero means detect it.
+	width int
+}
 
 func NewHuhPrompter() *HuhPrompter {
-	return &HuhPrompter{}
+	return &HuhPrompter{run: runInteractive}
 }
 
 func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpdate, error) {
@@ -59,7 +89,7 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 	}
 
 	groups := sortGroupsByRelevance(groupUpdates(updates))
-	rows := rowsFor(groups)
+	rows := rowsFor(groups, h.tableWidth())
 
 	var (
 		selectedKeys []string
@@ -80,11 +110,21 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 		),
 	)
 
-	if err := form.Run(); err != nil {
+	if err := h.run(form); err != nil {
 		return nil, err
 	}
 
 	return h.resolveGroups(groups, selectedKeys)
+}
+
+// tableWidth is the column budget available for a row.
+func (h *HuhPrompter) tableWidth() int {
+	if h.width > 0 {
+		return h.width
+	}
+
+	// huh draws on stderr, so its rows are budgeted against stderr's width.
+	return ui.TerminalWidth(os.Stderr) - huhChrome
 }
 
 // resolveGroups expands the selected groups back into individual updates.
@@ -138,7 +178,7 @@ func (h *HuhPrompter) narrowGroup(group updateGroup) ([]core.ImageUpdate, error)
 		),
 	)
 
-	if err := form.Run(); err != nil {
+	if err := h.run(form); err != nil {
 		return nil, err
 	}
 
@@ -191,14 +231,15 @@ func sortGroupsByRelevance(groups []updateGroup) []updateGroup {
 	return ordered
 }
 
-// rowsFor renders the group table, truncating to the terminal so no row wraps.
-func rowsFor(groups []updateGroup) []string {
+// rowsFor renders the group table, truncating to the given width so no row
+// wraps.
+func rowsFor(groups []updateGroup, width int) []string {
 	rows := make([]ui.Row, 0, len(groups))
 	for _, group := range groups {
 		rows = append(rows, rowFor(group))
 	}
 
-	return ui.RenderRows(rows, ui.TerminalWidth(os.Stderr)-huhChrome)
+	return ui.RenderRows(rows, width)
 }
 
 func rowFor(group updateGroup) ui.Row {
