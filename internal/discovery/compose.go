@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
@@ -12,9 +13,18 @@ import (
 	"github.com/potibm/shiphoist/internal/core"
 )
 
-type ComposeDiscoverer struct{}
+// ComposeDiscoverer finds image references in a Compose file.
+//
+// It honours the inline ignore directive, because the comment only exists in
+// the source text and is gone once the AST has been reduced to tokens.
+type ComposeDiscoverer struct {
+	filtered []core.Filtered
+}
 
-func (c *ComposeDiscoverer) Discover(ctx context.Context, filePath string) ([]core.ImageUpdate, error) {
+// Discover returns every image reference that is not ignored.
+func (c *ComposeDiscoverer) Discover(_ context.Context, filePath string) ([]core.ImageUpdate, error) {
+	c.filtered = nil
+
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file %s: %w", filePath, err)
@@ -35,25 +45,44 @@ func (c *ComposeDiscoverer) Discover(ctx context.Context, filePath string) ([]co
 		return []core.ImageUpdate{}, nil
 	}
 
+	// The raw lines let the directive be read back from the text the token
+	// points into, which the AST does not preserve reliably.
+	lines := strings.Split(string(data), "\n")
+
 	var updates []core.ImageUpdate
 
-	c.extractImagesFromNode(node, &updates, filePath)
+	c.extractImagesFromNode(node, &updates, filePath, lines)
 
 	return updates, nil
 }
 
-func (c *ComposeDiscoverer) extractImagesFromNode(n ast.Node, updates *[]core.ImageUpdate, filePath string) {
+// Filtered returns the references skipped by the ignore directive.
+func (c *ComposeDiscoverer) Filtered() []core.Filtered {
+	return append([]core.Filtered(nil), c.filtered...)
+}
+
+func (c *ComposeDiscoverer) extractImagesFromNode(
+	n ast.Node,
+	updates *[]core.ImageUpdate,
+	filePath string,
+	lines []string,
+) {
 	switch v := n.(type) {
 	case *ast.MappingNode:
-		c.extractImagesFromMapping(v, updates, filePath)
+		c.extractImagesFromMapping(v, updates, filePath, lines)
 	case *ast.SequenceNode:
 		for _, child := range v.Values {
-			c.extractImagesFromNode(child, updates, filePath)
+			c.extractImagesFromNode(child, updates, filePath, lines)
 		}
 	}
 }
 
-func (c *ComposeDiscoverer) extractImagesFromMapping(v *ast.MappingNode, updates *[]core.ImageUpdate, filePath string) {
+func (c *ComposeDiscoverer) extractImagesFromMapping(
+	v *ast.MappingNode,
+	updates *[]core.ImageUpdate,
+	filePath string,
+	lines []string,
+) {
 	for _, service := range v.Values {
 		serviceDef, ok := service.Value.(*ast.MappingNode)
 		if !ok {
@@ -72,9 +101,53 @@ func (c *ComposeDiscoverer) extractImagesFromMapping(v *ast.MappingNode, updates
 				continue
 			}
 
+			if c.isIgnored(prop.Value, lines) {
+				continue
+			}
+
 			*updates = append(*updates, extractImageUpdate(prop.Value, filePath, serviceName))
 		}
 	}
+}
+
+// isIgnored reports whether the reference at node carries the inline directive,
+// recording the skip when it does.
+func (c *ComposeDiscoverer) isIgnored(node ast.Node, lines []string) bool {
+	token := node.GetToken()
+	if token == nil {
+		return false
+	}
+
+	line, ok := lineAt(lines, token.Position.Line)
+	if !ok {
+		return false
+	}
+
+	if !hasIgnoreDirective(line, token.Position.Column) {
+		return false
+	}
+
+	// Report the repository, not the literal reference, so it reads the same
+	// way as a --exclude match.
+	imageName, _, _ := ParseImageReference(token.Value)
+
+	c.filtered = append(c.filtered, core.Filtered{
+		Image:      imageName,
+		LineNumber: token.Position.Line,
+		Reason:     ReasonIgnoreDirective,
+	})
+
+	return true
+}
+
+// lineAt returns the 1-based line, reporting false when the position is outside
+// the file.
+func lineAt(lines []string, number int) (string, bool) {
+	if number < 1 || number > len(lines) {
+		return "", false
+	}
+
+	return lines[number-1], true
 }
 
 // isNullNode reports whether a value carries no reference at all, as in
@@ -101,19 +174,18 @@ func serviceNameOf(service *ast.MappingValueNode) string {
 	return key.Value
 }
 
-// Helper function to extract metadata cleanly from the node.
+// extractImageUpdate turns an image value node into an update, parsing the
+// reference into its components.
 func extractImageUpdate(node ast.Node, filePath, serviceName string) core.ImageUpdate {
 	token := node.GetToken()
-	originalString := token.Value
-	lineNumber := token.Position.Line
 
-	imageName, oldTag, oldDigest := ParseImageReference(originalString)
+	imageName, oldTag, oldDigest := ParseImageReference(token.Value)
 
 	return core.ImageUpdate{
 		FilePath:       filePath,
-		LineNumber:     lineNumber,
+		LineNumber:     token.Position.Line,
 		ServiceName:    serviceName,
-		OriginalString: originalString,
+		OriginalString: token.Value,
 		ImageName:      imageName,
 		OldTag:         oldTag,
 		OldDigest:      oldDigest,
