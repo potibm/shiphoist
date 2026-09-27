@@ -44,10 +44,89 @@ contain no escape sequences. `--verbose` restores one line per image. Registry
 failures are collected and printed as a block once the line is erased, so they
 cannot break the single line while it is being redrawn.
 
-### 3. CI/CD Mode (Planned: `--yes`)
-For pipelines, Makefiles, or automation. Will skip the UI and immediately apply all safe (pre-selected) updates.
+### 3. CI/CD Mode (`--yes`, optionally with `--dry-run` or `--json`)
+For pipelines, Makefiles, or automation. Skips the form and applies every update
+within the `--mode` cap. See "Update Caps" below.
 
----
+## Update Caps
+
+`--mode` names the largest jump that may be applied. The ranking lives in
+`core.Severity` rather than in the UI, because the interactive table and the
+non-interactive selector both have to reason about it and neither may import the
+other:
+
+```go
+SeverityMajor > SeverityMinor > SeverityPatch > SeverityPin > SeverityUnknown
+```
+
+A cap is enforced differently in the two modes, and the difference is the whole
+design:
+
+| | Interactively | With `--yes` |
+| --- | --- | --- |
+| Row above the cap | shown, unchecked | not offered at all |
+| Why | the user can see a bigger jump exists and opt into it deliberately | there is nobody to ask, so "not pre-selected" can only mean "not applied" |
+
+`internal/prompting.Apply` is therefore a different type from the TUI, not a
+configured instance of it. Filtering the TUI's input would have hidden the rows
+and thrown away the information the cap exists to preserve.
+
+`updateGroup.safeToApply` is deliberately two conditions:
+
+```go
+severity < SeverityMajor && severity <= Severity(maxUpdate)
+```
+
+The first is a floor, the second a ceiling. A cap is something the user asked
+for, so it may only tighten the automatic selection; it must never be able to
+reopen the major-update safety floor. Collapsing this to a single comparison
+would let `--mode major` pre-select a major bump.
+
+## Non-Interactive Operation
+
+`--yes` substitutes `prompting.Apply` for the TUI. `--dry-run` sets
+`Pipeline.DryRun`, which resolves and reports the selection but never calls the
+`Patcher`, so the report names precisely the changes a real run would write.
+
+`--quiet` adds a `modeQuiet` to `ui.Progress`, which writes nothing at all — not
+the bar, not the summary, not the failure block. It still *returns* the
+collected failures, because the report and the exit code are built from them;
+hiding the chatter must not lose the record.
+
+### stdout and stderr
+
+`--json` gives stdout to the report and moves every human-facing line to stderr
+via one helper, `humanOut`. The result table and banner follow, so a CI log
+shows what was attempted next to the machine-readable result. This is why
+`Pipeline.Out` and the CLI's own printing are wired to the same writer choice
+rather than to `os.Stdout` directly.
+
+`--json` and `--verbose` are rejected together: both promise one line per image,
+and honouring both would corrupt the document.
+
+### When there is no terminal
+
+Without a TTY, and without `--yes`, shiphoist fails with advice rather than
+letting the form library produce an opaque error. The check is `ui.CanPrompt`,
+which asks exactly the question the renderer answers: a real terminal, **or**
+`TERM=dumb`, where `huh` switches to its accessible numbered list. Asking a
+stricter question than the renderer does would refuse a prompt that works.
+
+### Exit codes
+
+An unresolvable image is a *report outcome*, not a failure of shiphoist: healthy
+images are still updated and the rest are listed in `Report.Failures`. Whether
+that also fails the process depends on the mode:
+
+| Mode | Unresolved images | Exit |
+| --- | --- | --- |
+| interactive | reported, run continues | `0` |
+| `--yes` / `--json` | reported, run continues | `1` |
+
+`--yes` and `--json` are the modes a pipeline uses, so they are the modes where an
+image nobody could check has to fail the build. The sentinel `errIncompleteRun`
+carries that without a message, because `main` must not print it: the report
+already names the images, and printing an error line too would be duplication.
 
 ## 🏗️ Architecture: The Hybrid Approach
 
@@ -275,9 +354,13 @@ be unit tested without a terminal:
   it. The marker, version and kind columns are never shrunk, since they carry
   the meaning of the row.
 * `progress.go` — the bar reporter, safe for concurrent use because a run
-  advances from one goroutine per image.
-* `terminal.go` — TTY detection and width via `charmbracelet/x/term`. The bar is
-  drawn for real terminals only; anything else gets the summary alone.
+  advances from one goroutine per image. Its four modes are `modeQuiet`,
+  `modeSilent`, `modeBar` and `modeVerbose`, in increasing order of insistence,
+  so `--quiet` needs no special casing at the call sites.
+* `terminal.go` — TTY detection and width via `charmbracelet/x/term`, plus
+  `CanPrompt`, which answers "can a form be answered here?" rather than "is this
+  a TTY?". The bar is drawn for real terminals only; anything else gets the
+  summary alone.
 
 Neither `bubbles/spinner` nor `bubbles/progress` is used. Their models animate
 through `bubbletea`, which would pull a large dependency into a direct
@@ -320,3 +403,17 @@ backoff with jitter, covering 408/429/5xx), so a custom retry loop in
   per distinct lookup and merges the results under a mutex.
 * Terminal output is asserted on the bytes written, so wrapping, alignment and
   the absence of escape sequences in non-interactive output are all testable.
+* **The CLI is tested through its real entry point.** `cmd/shiphoist` builds the
+  actual `cobra` command and drives it via `SetArgs`, with `deps` supplying
+  buffers and stubs. Commands return errors rather than calling `os.Exit`, so
+  `main` holds the only exit in the program and every branch below it is
+  reachable from a test. A dedicated test asserts the command stays silent on
+  failure, so a passing suite also proves nothing is written straight to the
+  process.
+* **The interactive form is tested for real, without a terminal.** `huh` in
+  accessible mode (`WithAccessible` + `WithInput` + `WithOutput`) renders a
+  numbered list and reads line input, so a blank line confirms whatever
+  shiphoist preselected. That is the only assertion made: it covers the
+  pre-selection policy, the grouping and the drill-down, while deliberately
+  *not* covering interactive toggling, which is `huh`'s behaviour rather than
+  shiphoist's.

@@ -10,6 +10,7 @@ An interactive CLI tool to surgically update Docker image tags in Compose files,
 - **Interactive TUI:** Review and toggle individual updates in an aligned table before writing changes to disk. Identical updates shared across services collapse into a single row, and a second prompt lets you narrow which services to apply.
 - **Live Progress Bar:** Registry checks report on one updating line, so a 25-image file no longer scrolls past.
 - **Fetch Deduplication:** A repository used by eight services costs one registry round-trip, not eight.
+- **CI Ready:** `--yes`, `--dry-run`, `--mode`, `--quiet` and a `--json` report on stdout make shiphoist usable as a non-interactive gate.
 - **Single Image Inspector:** Check registry update candidates for any container image without touching a file.
 - **Caching:** Registry queries are cached locally for 15 minutes to keep repeated runs fast.
 
@@ -63,6 +64,65 @@ Shiphoist caches registry queries locally to accelerate repeated runs. Bypass th
 shiphoist --force docker-compose.yml
 shiphoist check --force nginx:1.25.0
 ```
+
+## Automation & CI
+
+### Non-Interactive Updates
+
+`--yes` applies every update within `--mode` without prompting. Without it, shiphoist needs a terminal to ask on and will refuse to run otherwise:
+
+```bash
+shiphoist --yes docker-compose.yml
+```
+
+### Limiting the Version Jump
+
+`--mode` caps how large an update may be: `patch`, `minor` or `major` (the default). It only ever *tightens* what is applied.
+
+Interactively, a row above the cap is still shown — just left unchecked, so you can see a bigger jump exists and select it deliberately. With `--yes` there is nobody to ask, so anything above the cap is not applied.
+
+```bash
+shiphoist --mode patch docker-compose.yml          # only patch-level jumps
+shiphoist --yes --mode minor docker-compose.yml    # never a major
+```
+
+A major update is never pre-selected and never applied automatically, whatever `--mode` says.
+
+### Previewing Without Writing
+
+`--dry-run` reports exactly what a real run would write and leaves the file alone:
+
+```bash
+shiphoist --dry-run docker-compose.yml
+# 🔍 Would apply 2 updates (dry run, nothing was written):
+#
+#   🚀 [web] nginx: 1.25.0 -> 1.31.6 (minor)
+```
+
+### Machine-Readable Output
+
+`--json` writes a single report document to stdout and moves all progress and prose to stderr, so the output stays pipeable:
+
+```bash
+shiphoist --yes --json docker-compose.yml | jq -r '.updates[] | "\(.service_name) \(.old_tag) -> \(.new_tag)"'
+```
+
+`written` and `dry_run` tell you whether the file was touched; `failures` lists every image that could not be checked; `checked` versus `references` exposes how much deduplication happened.
+
+### Quiet Mode
+
+`--quiet` suppresses the progress bar, the banner, the summary and the skipped-images block. The result is still printed, because that is the point of the run. Combine it with `--json` for machine-only output.
+
+### Exit Codes
+
+| Situation | Exit code |
+| --- | --- |
+| Run completed, every image resolved | `0` |
+| Some images could not be resolved, interactive run | `0` — reported, not fatal |
+| Some images could not be resolved, with `--yes` or `--json` | `1` |
+| Bad usage, unreadable file, cancelled run | `1` |
+
+An unresolvable image is never allowed to abort a run: healthy images are still updated and the rest are listed under `failures`. Under `--yes` and `--json` it additionally fails the process, which is what makes those modes usable as a CI gate.
 
 ### Progress Output
 
@@ -126,9 +186,10 @@ go test -race ./...            # exercises the concurrent fetch fan-out
 Upcoming milestones and planned capabilities:
 
 - [ ] Native `Dockerfile` discovery & patching
-- [ ] Non-interactive CI mode (`--yes` / `--dry-run`)
-- [ ] Export reports as JSON (`--json`)
-- [ ] Structured logging (`--debug` / `--quiet`)
+- [ ] Inline `# shiphoist-ignore` annotations
+- [ ] `--exclude <regex>` to skip images by pattern
+- [ ] Opt out of digest pinning with `--style preserve`
+- [ ] Structured logging (`--debug`)
 
 For the full list of planned features, performance enhancements, and technical debt items, see [TODO.md](TODO.md).
 
