@@ -8,7 +8,6 @@ import (
 	"io"
 
 	"github.com/potibm/shiphoist/internal/core"
-	"github.com/potibm/shiphoist/internal/discovery"
 	"github.com/potibm/shiphoist/internal/engine"
 	"github.com/potibm/shiphoist/internal/patcher"
 )
@@ -29,6 +28,11 @@ func runUpdate(d deps, opts options, filePath string) error {
 		return err
 	}
 
+	discoverer, err := buildDiscoverer(opts)
+	if err != nil {
+		return err
+	}
+
 	if !opts.Yes && !d.IsInteractive() {
 		return fmt.Errorf(
 			"%w: use --yes to apply every update within --mode, optionally with --dry-run to preview only",
@@ -44,7 +48,7 @@ func runUpdate(d deps, opts options, filePath string) error {
 	human := humanOut(d, opts)
 
 	pipeline := &engine.Pipeline{
-		Discoverer: &discovery.ComposeDiscoverer{},
+		Discoverer: discoverer,
 		Fetcher:    activeFetcher,
 		Patcher:    &patcher.FilePatcher{},
 		Prompter:   buildPrompter(d, opts, maxUpdate),
@@ -66,6 +70,8 @@ func runUpdate(d deps, opts options, filePath string) error {
 		return err
 	}
 
+	report.Filtered = filteredFrom(discoverer)
+
 	if opts.JSON {
 		if err := writeReportJSON(d.Out, report); err != nil {
 			return err
@@ -74,7 +80,25 @@ func runUpdate(d deps, opts options, filePath string) error {
 
 	printApplyResult(human, report)
 
+	if !opts.Quiet {
+		printFiltered(human, report)
+	}
+
 	return exitCodeFor(opts, report)
+}
+
+// printFiltered reports the references that were never checked, so a run cannot
+// quietly cover less of the file than it appears to.
+func printFiltered(w io.Writer, report *core.Report) {
+	if len(report.Filtered) == 0 {
+		return
+	}
+
+	fmt.Fprintf(w, "\n🚫 Not checked (%d):\n", len(report.Filtered))
+
+	for _, f := range report.Filtered {
+		fmt.Fprintf(w, "   • %s (line %d): %s\n", f.Image, f.LineNumber, f.Reason)
+	}
 }
 
 // printBanner introduces the run. It is pure chrome, so --quiet drops it along

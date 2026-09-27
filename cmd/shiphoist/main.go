@@ -56,7 +56,8 @@ func newRootCmd(d deps) *cobra.Command {
 	rootCmd.SetOut(d.Out)
 	rootCmd.SetErr(d.ErrOut)
 
-	registerFlags(rootCmd, &opts)
+	registerSharedFlags(rootCmd, &opts)
+	registerUpdateFlags(rootCmd, &opts)
 
 	rootCmd.Version = fmt.Sprintf("%s (Commit: %s, Date: %s)", Version, Commit, Date)
 
@@ -76,16 +77,28 @@ Example: shiphoist check ghcr.io/potibm/kasseapparat:2.18.0`,
 	return rootCmd
 }
 
-// registerFlags binds the flags to opts. They are persistent so `check` can
-// share --force with the root command.
-func registerFlags(rootCmd *cobra.Command, opts *options) {
+// registerSharedFlags binds the flags both commands understand. They are
+// persistent so `check` can reuse them.
+func registerSharedFlags(rootCmd *cobra.Command, opts *options) {
 	flags := rootCmd.PersistentFlags()
 
 	flags.BoolVarP(&opts.ForceRefresh, "force", "f", false, "Force refresh by bypassing the local cache")
 	flags.BoolVarP(&opts.Verbose, "verbose", "v", false, "Report one line per image instead of a single progress bar")
+}
+
+// registerUpdateFlags binds the flags that only mean something when a file is
+// updated.
+//
+// They are local rather than persistent so that `check --json` is a usage error
+// instead of being silently ignored: a flag that quietly does nothing is worse
+// than one that refuses.
+func registerUpdateFlags(rootCmd *cobra.Command, opts *options) {
+	flags := rootCmd.Flags()
+
 	flags.BoolVar(&opts.DryRun, "dry-run", false, "Report the updates that would apply, without writing them")
 	flags.BoolVarP(&opts.Yes, "yes", "y", false, "Apply every update within --mode without asking")
 	flags.BoolVar(&opts.JSON, "json", false, "Write a machine-readable report to stdout, keeping progress on stderr")
 	flags.BoolVarP(&opts.Quiet, "quiet", "q", false, "Suppress the progress bar, the summary and skipped images")
 	flags.StringVar(&opts.Mode, "mode", "", "Limit updates to "+strings.Join(modeNames, ", "))
+	flags.StringVar(&opts.Exclude, "exclude", "", "Skip images whose repository matches this regular expression")
 }

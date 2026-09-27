@@ -3,9 +3,11 @@ package main
 import (
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/potibm/shiphoist/internal/core"
+	"github.com/potibm/shiphoist/internal/discovery"
 	"github.com/potibm/shiphoist/internal/prompting"
 )
 
@@ -37,6 +39,46 @@ type options struct {
 
 	// Mode is the raw --mode value, validated by maxUpdate.
 	Mode string
+
+	// Exclude is a regular expression matched against image repositories.
+	// Filtering happens at discovery, so it is resolved by buildDiscoverer.
+	Exclude string
+}
+
+// buildDiscoverer assembles the discovery chain.
+//
+// The regex is compiled here rather than where it is used, so a bad pattern
+// costs no registry traffic. An empty --exclude installs no decorator at all,
+// which keeps the common path free of an extra layer.
+func buildDiscoverer(opts options) (core.Discoverer, error) {
+	compose := &discovery.ComposeDiscoverer{}
+
+	if strings.TrimSpace(opts.Exclude) == "" {
+		return compose, nil
+	}
+
+	pattern, err := regexp.Compile(opts.Exclude)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --exclude %q: %w", opts.Exclude, err)
+	}
+
+	return &discovery.ExcludeDiscoverer{Inner: compose, Pattern: pattern}, nil
+}
+
+// filteredFrom returns the references a discoverer removed, or nil for one that
+// does not filter.
+//
+// The discoverer is the only place that can honour an inline directive, since
+// the comment is gone once the file has been reduced to tokens. The CLI
+// assembled the chain, so it is the CLI that completes the report with it; the
+// engine stays unaware of filtering.
+func filteredFrom(discoverer core.Discoverer) []core.Filtered {
+	filtered, ok := discoverer.(core.FilteredDiscoverer)
+	if !ok {
+		return nil
+	}
+
+	return filtered.Filtered()
 }
 
 // modeNames are the accepted --mode values, used for both the help text and the

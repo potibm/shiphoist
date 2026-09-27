@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/potibm/shiphoist/internal/core"
+	"github.com/potibm/shiphoist/internal/discovery"
 )
 
 const composeFixture = `services:
@@ -831,4 +832,179 @@ func TestExitCodeFor(t *testing.T) {
 			}
 		})
 	}
+}
+
+// filteredFixture marks one service with the inline directive, so a run has
+// something to filter.
+const filteredFixture = `services:
+  web:
+    image: nginx:1.25.0
+  db:
+    image: postgres:16.2 # shiphoist-ignore
+`
+
+// newFilteredHarness writes a fixture containing the ignore directive.
+func newFilteredHarness(t *testing.T) *harness {
+	t.Helper()
+
+	h := newHarness(t)
+	h.compose = writeCompose(t, "docker-compose.yml", filteredFixture)
+
+	return h
+}
+
+func writeCompose(t *testing.T, name, content string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+
+	return path
+}
+
+// An ignored reference is never fetched, never patched, and is stated.
+func TestRunUpdate_IgnoreDirectiveIsHonoured(t *testing.T) {
+	h := newFilteredHarness(t)
+
+	if err := runUpdate(h.deps, options{}, h.compose); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	written := readFile(t, h.compose)
+
+	if !strings.Contains(written, "image: postgres:16.2 # shiphoist-ignore") {
+		t.Errorf("expected the ignored reference to be untouched:\n%s", written)
+	}
+
+	// The other reference in the same file is still updated.
+	if !strings.Contains(written, "image: nginx:1.25.0.1@sha256:newdigest") {
+		t.Errorf("expected nginx to be updated:\n%s", written)
+	}
+
+	assertContains(t, h.out.String(), "Successfully applied 1 update")
+	assertContains(t, h.out.String(), "Not checked (1)")
+	assertContains(t, h.out.String(), "postgres (line 5): ignore-directive")
+}
+
+func TestRunUpdate_ExcludeSkipsRepositories(t *testing.T) {
+	h := newHarness(t)
+
+	if err := runUpdate(h.deps, options{Exclude: `^redis$`}, h.compose); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	written := readFile(t, h.compose)
+
+	if !strings.Contains(written, "image: redis:7.2.1") {
+		t.Errorf("expected redis to be untouched:\n%s", written)
+	}
+
+	assertContains(t, h.out.String(), "Not checked (1)")
+	assertContains(t, h.out.String(), "redis (line 5): excluded")
+}
+
+// --exclude and the inline directive stack, and the report accounts for both.
+func TestRunUpdate_FiltersCombine(t *testing.T) {
+	h := newFilteredHarness(t)
+
+	opts := options{Exclude: `^nginx$`, JSON: true}
+	if err := runUpdate(h.deps, opts, h.compose); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var report core.Report
+	if err := json.Unmarshal(h.out.Bytes(), &report); err != nil {
+		t.Fatalf("stdout is not a JSON document: %v\n%s", err, h.out.String())
+	}
+
+	if len(report.Filtered) != 2 {
+		t.Fatalf("expected 2 filtered references, got %+v", report.Filtered)
+	}
+
+	// Ordered by where they appear in the file, whatever removed them.
+	if report.Filtered[0].Image != "nginx" || report.Filtered[1].Image != "postgres" {
+		t.Errorf("expected nginx then postgres, got %+v", report.Filtered)
+	}
+
+	if report.Filtered[0].Reason != discovery.ReasonExcluded {
+		t.Errorf("expected %q, got %q", discovery.ReasonExcluded, report.Filtered[0].Reason)
+	}
+
+	// Both references were declared but neither was checked, so References
+	// must not claim to cover the file on its own.
+	if report.References != 0 {
+		t.Errorf("expected 0 checked references, got %d", report.References)
+	}
+}
+
+func TestRunUpdate_ExcludeRejectsABadPattern(t *testing.T) {
+	h := newHarness(t)
+	h.deps.NewFetcher = func(bool) (core.RegistryFetcher, error) {
+		t.Error("the fetcher must not be built for an invalid --exclude")
+
+		return stubFetcher{resolve: upgrade}, nil
+	}
+
+	err := runUpdate(h.deps, options{Exclude: "([unclosed"}, h.compose)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+
+	if !strings.Contains(err.Error(), "invalid --exclude") {
+		t.Errorf("expected an exclude error, got %v", err)
+	}
+}
+
+func TestRunUpdate_QuietSuppressesTheFilteredBlock(t *testing.T) {
+	h := newFilteredHarness(t)
+
+	if err := runUpdate(h.deps, options{Quiet: true}, h.compose); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(h.out.String(), "Not checked") {
+		t.Errorf("expected the filtered block to be suppressed, got:\n%s", h.out.String())
+	}
+}
+
+// The flags that only mean something for a file must not be silently accepted
+// by `check`.
+func TestNewRootCmd_CheckRejectsUpdateOnlyFlags(t *testing.T) {
+	for _, flag := range []string{"--json", "--dry-run", "--yes", "--mode", "--exclude", "--quiet"} {
+		t.Run(flag, func(t *testing.T) {
+			h := newHarness(t)
+			cmd := newRootCmd(h.deps)
+			cmd.SetArgs([]string{"check", "postgres:16.2", flag})
+
+			if err := cmd.Execute(); err == nil {
+				t.Errorf("expected %s to be rejected by check", flag)
+			}
+		})
+	}
+}
+
+func TestNewRootCmd_CheckKeepsSharedFlags(t *testing.T) {
+	h := newHarness(t)
+	cmd := newRootCmd(h.deps)
+	cmd.SetArgs([]string{"--verbose", "check", "postgres:16.2"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertContains(t, h.out.String(), "🔍 Checking postgres:16.2")
+}
+
+func TestNewRootCmd_RoutesExclude(t *testing.T) {
+	h := newHarness(t)
+	cmd := newRootCmd(h.deps)
+	cmd.SetArgs([]string{"--exclude", `^redis$`, h.compose})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertContains(t, h.out.String(), "redis (line 5): excluded")
 }
