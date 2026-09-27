@@ -8,7 +8,12 @@ syft = "1.52.0"
 
 [tasks."dev"]
 description = "Runs the application"
-run = "go run cmd/shiphoist/main.go"
+# The package path, never a single file: `go run <file>` compiles only that
+# file, so it breaks silently whenever the package is split up.
+run = "go run ./cmd/shiphoist"
+# mise does not connect stdin by default, and the selection table needs a
+# terminal to read from.
+interactive = true
 
 [tasks.test]
 description = "Runs all tests in the project"
