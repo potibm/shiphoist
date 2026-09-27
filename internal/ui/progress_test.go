@@ -403,3 +403,51 @@ func TestProgress_CounterIsClampedToTotal(t *testing.T) {
 		t.Errorf("expected the counter to be clamped, got:\n%s", out.String())
 	}
 }
+
+func TestProgress_QuietWritesNothing(t *testing.T) {
+	out := &bytes.Buffer{}
+	progress := NewProgress(out, 2, ProgressOptions{Quiet: true, Interactive: true, Width: 80})
+
+	progress.Advance("nginx")
+	progress.Fail("postgres", errTest)
+
+	if out.Len() != 0 {
+		t.Errorf("expected no output while running, got:\n%q", out.String())
+	}
+
+	// Quiet hides the chatter but must not lose the record of what failed, or
+	// the report and the exit code would both be built on nothing.
+	failures := progress.Stop("summary")
+
+	if out.Len() != 0 {
+		t.Errorf("expected no summary either, got:\n%q", out.String())
+	}
+
+	if len(failures) != 1 {
+		t.Fatalf("expected Stop to still return 1 failure, got %d", len(failures))
+	}
+
+	if failures[0].Label != "postgres" {
+		t.Errorf("expected the label to be preserved, got %q", failures[0].Label)
+	}
+}
+
+// Quiet wins over every other mode, or --quiet would depend on whether the
+// output happened to be a terminal.
+func TestProgress_QuietBeatsEveryOtherMode(t *testing.T) {
+	for _, opts := range []ProgressOptions{
+		{Quiet: true, Verbose: true},
+		{Quiet: true, Interactive: true},
+		{Quiet: true, Verbose: true, Interactive: true},
+	} {
+		out := &bytes.Buffer{}
+		progress := NewProgress(out, 1, opts)
+
+		progress.Advance("nginx")
+		progress.Stop("summary")
+
+		if out.Len() != 0 {
+			t.Errorf("expected silence for %+v, got:\n%q", opts, out.String())
+		}
+	}
+}

@@ -42,9 +42,11 @@ const (
 type progressMode int
 
 const (
+	// modeQuiet writes nothing at all, not even the final summary.
+	modeQuiet progressMode = iota
 	// modeSilent writes nothing until Stop, keeping piped output and CI logs
 	// free of control characters.
-	modeSilent progressMode = iota
+	modeSilent
 	modeBar
 	modeVerbose
 )
@@ -64,6 +66,10 @@ type ProgressOptions struct {
 	// Verbose writes one line per image instead of a single updating line.
 	// It takes precedence over Interactive.
 	Verbose bool
+
+	// Quiet writes nothing at all, including the summary and the failure
+	// block. It takes precedence over every other mode.
+	Quiet bool
 
 	// Width is the terminal width in columns.
 	Width int
@@ -97,6 +103,8 @@ func NewProgress(w io.Writer, total int, opts ProgressOptions) *Progress {
 
 func progressModeFor(opts ProgressOptions) progressMode {
 	switch {
+	case opts.Quiet:
+		return modeQuiet
 	case opts.Verbose:
 		return modeVerbose
 	case opts.Interactive:
@@ -139,11 +147,22 @@ func (p *Progress) Fail(label string, err error) {
 // failures. It returns those failures so the caller can fold them into an exit
 // code or a machine-readable report.
 //
+// A quiet reporter prints nothing at all, but still returns its failures: the
+// point of --quiet is to hide the chatter, not to lose the record of what
+// failed.
+//
 // Stop clears the collection, so a caller that needs the count *before* the
 // summary is printed must read Failures first.
 func (p *Progress) Stop(summary string) []Failure {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	failures := p.failures
+	p.failures = nil
+
+	if p.mode == modeQuiet {
+		return failures
+	}
 
 	if p.mode == modeBar {
 		fmt.Fprint(p.writer, clearLine)
@@ -153,10 +172,7 @@ func (p *Progress) Stop(summary string) []Failure {
 		fmt.Fprintln(p.writer, summary)
 	}
 
-	p.printFailures()
-
-	failures := p.failures
-	p.failures = nil
+	printFailures(p.writer, failures)
 
 	return failures
 }
@@ -246,20 +262,20 @@ func clip(value string, width int) string {
 
 // printFailures reports every collected failure as a block, once the progress
 // line is out of the way.
-func (p *Progress) printFailures() {
-	if len(p.failures) == 0 {
+func printFailures(w io.Writer, failures []Failure) {
+	if len(failures) == 0 {
 		return
 	}
 
 	noun := "images"
-	if len(p.failures) == 1 {
+	if len(failures) == 1 {
 		noun = "image"
 	}
 
-	fmt.Fprintf(p.writer, "\n⚠️  Skipped %d %s:\n", len(p.failures), noun)
+	fmt.Fprintf(w, "\n⚠️  Skipped %d %s:\n", len(failures), noun)
 
-	for _, failure := range p.failures {
-		fmt.Fprintf(p.writer, "   • %s: %v\n", failure.Label, failure.Err)
+	for _, failure := range failures {
+		fmt.Fprintf(w, "   • %s: %v\n", failure.Label, failure.Err)
 	}
 }
 

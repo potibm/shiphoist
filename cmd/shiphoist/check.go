@@ -10,8 +10,8 @@ import (
 
 // runCheck resolves the update candidates for a single image reference without
 // touching any file. It returns an error rather than exiting.
-func runCheck(d deps, imageRef string, forceRefresh bool) error {
-	activeFetcher, err := d.NewFetcher(forceRefresh)
+func runCheck(d deps, opts options, imageRef string) error {
+	activeFetcher, err := d.NewFetcher(opts.ForceRefresh)
 	if err != nil {
 		return fmt.Errorf("failed to initialize fetcher: %w", err)
 	}

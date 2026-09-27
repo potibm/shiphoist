@@ -33,6 +33,10 @@ type Pipeline struct {
 	// DryRun resolves and reports the updates without writing to the file.
 	// The reported updates are exactly what a real run would have applied.
 	DryRun bool
+
+	// Quiet suppresses the progress bar, the summary and the skipped-images
+	// block. The report is unaffected.
+	Quiet bool
 }
 
 // ProcessFile runs the discovered images through the update pipeline and
@@ -128,6 +132,7 @@ func (p *Pipeline) newProgress(total int) *ui.Progress {
 	return ui.NewProgress(out, total, ui.ProgressOptions{
 		Interactive: isFile && ui.IsTerminal(file),
 		Verbose:     p.Verbose,
+		Quiet:       p.Quiet,
 		Width:       ui.TerminalWidth(file),
 	})
 }

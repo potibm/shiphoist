@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -20,9 +22,13 @@ const (
 
 func main() {
 	if err := newRootCmd(newDeps()).Execute(); err != nil {
-		// main owns the only os.Exit in the program: cobra returns the error so
-		// every command stays testable.
-		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		// errIncompleteRun is a run outcome, not a malfunction: the report
+		// already names the images, so printing it here would only duplicate
+		// that. It still has to reach the exit code.
+		if !errors.Is(err, errIncompleteRun) {
+			fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		}
+
 		os.Exit(1)
 	}
 }
@@ -30,10 +36,7 @@ func main() {
 // newRootCmd wires the CLI. It returns the command instead of running it so a
 // test can drive it through cobra's own flag parsing.
 func newRootCmd(d deps) *cobra.Command {
-	var (
-		forceRefresh bool
-		verbose      bool
-	)
+	var opts options
 
 	rootCmd := &cobra.Command{
 		Use:   "shiphoist [path-to-docker-compose.yml]",
@@ -44,7 +47,7 @@ func newRootCmd(d deps) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runUpdate(d, args[0], forceRefresh, verbose)
+			return runUpdate(d, opts, args[0])
 		},
 	}
 
@@ -53,9 +56,7 @@ func newRootCmd(d deps) *cobra.Command {
 	rootCmd.SetOut(d.Out)
 	rootCmd.SetErr(d.ErrOut)
 
-	flags := rootCmd.PersistentFlags()
-	flags.BoolVarP(&forceRefresh, "force", "f", false, "Force refresh by bypassing the local cache")
-	flags.BoolVarP(&verbose, "verbose", "v", false, "Report one line per image instead of a single progress bar")
+	registerFlags(rootCmd, &opts)
 
 	rootCmd.Version = fmt.Sprintf("%s (Commit: %s, Date: %s)", Version, Commit, Date)
 
@@ -66,11 +67,25 @@ func newRootCmd(d deps) *cobra.Command {
 Example: shiphoist check ghcr.io/potibm/kasseapparat:2.18.0`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runCheck(d, args[0], forceRefresh)
+			return runCheck(d, opts, args[0])
 		},
 	}
 
 	rootCmd.AddCommand(checkCmd)
 
 	return rootCmd
+}
+
+// registerFlags binds the flags to opts. They are persistent so `check` can
+// share --force with the root command.
+func registerFlags(rootCmd *cobra.Command, opts *options) {
+	flags := rootCmd.PersistentFlags()
+
+	flags.BoolVarP(&opts.ForceRefresh, "force", "f", false, "Force refresh by bypassing the local cache")
+	flags.BoolVarP(&opts.Verbose, "verbose", "v", false, "Report one line per image instead of a single progress bar")
+	flags.BoolVar(&opts.DryRun, "dry-run", false, "Report the updates that would apply, without writing them")
+	flags.BoolVarP(&opts.Yes, "yes", "y", false, "Apply every update within --mode without asking")
+	flags.BoolVar(&opts.JSON, "json", false, "Write a machine-readable report to stdout, keeping progress on stderr")
+	flags.BoolVarP(&opts.Quiet, "quiet", "q", false, "Suppress the progress bar, the summary and skipped images")
+	flags.StringVar(&opts.Mode, "mode", "", "Limit updates to "+strings.Join(modeNames, ", "))
 }

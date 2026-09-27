@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -11,29 +13,50 @@ import (
 	"github.com/potibm/shiphoist/internal/patcher"
 )
 
+// errNoTerminal is returned when the run needs a human and has nowhere to ask.
+var errNoTerminal = errors.New("no terminal to prompt on")
+
 // runUpdate runs the full pipeline over filePath and applies the selected
 // updates. It returns an error rather than exiting, leaving the process outcome
 // to the caller.
-func runUpdate(d deps, filePath string, forceRefresh, verbose bool) error {
-	activeFetcher, err := d.NewFetcher(forceRefresh)
+func runUpdate(d deps, opts options, filePath string) error {
+	if err := assertFlagCombination(opts); err != nil {
+		return err
+	}
+
+	maxUpdate, err := opts.maxUpdate()
+	if err != nil {
+		return err
+	}
+
+	if !opts.Yes && !d.IsInteractive() {
+		return fmt.Errorf(
+			"%w: use --yes to apply every update within --mode, optionally with --dry-run to preview only",
+			errNoTerminal,
+		)
+	}
+
+	activeFetcher, err := d.NewFetcher(opts.ForceRefresh)
 	if err != nil {
 		return fmt.Errorf("failed to initialize fetcher: %w", err)
 	}
+
+	human := humanOut(d, opts)
 
 	pipeline := &engine.Pipeline{
 		Discoverer: &discovery.ComposeDiscoverer{},
 		Fetcher:    activeFetcher,
 		Patcher:    &patcher.FilePatcher{},
-		Prompter:   d.NewPrompter(),
-		Out:        d.Out,
-		Verbose:    verbose,
+		Prompter:   buildPrompter(d, opts, maxUpdate),
+		Out:        human,
+		Verbose:    opts.Verbose,
+		DryRun:     opts.DryRun,
+		Quiet:      opts.Quiet,
 	}
 
-	if forceRefresh {
-		fmt.Fprintln(d.Out, "🔄 Force refresh activated - bypassing cache...")
+	if !opts.Quiet {
+		printBanner(human, opts, filePath)
 	}
-
-	fmt.Fprintf(d.Out, "🚢 Hoisting sails for %s...\n", filePath)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -43,7 +66,38 @@ func runUpdate(d deps, filePath string, forceRefresh, verbose bool) error {
 		return err
 	}
 
-	printApplyResult(d.Out, report)
+	if opts.JSON {
+		if err := writeReportJSON(d.Out, report); err != nil {
+			return err
+		}
+	}
+
+	printApplyResult(human, report)
+
+	return exitCodeFor(opts, report)
+}
+
+// printBanner introduces the run. It is pure chrome, so --quiet drops it along
+// with the progress reporter's own output.
+func printBanner(w io.Writer, opts options, filePath string) {
+	if opts.ForceRefresh {
+		fmt.Fprintln(w, "🔄 Force refresh activated - bypassing cache...")
+	}
+
+	fmt.Fprintf(w, "🚢 Hoisting sails for %s...\n", filePath)
+}
+
+// writeReportJSON writes the report as the single document on w.
+//
+// Indented rather than compact because this is as often read in a CI log by a
+// human as piped into jq.
+func writeReportJSON(w io.Writer, report *core.Report) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+
+	if err := encoder.Encode(report); err != nil {
+		return fmt.Errorf("failed to write report: %w", err)
+	}
 
 	return nil
 }

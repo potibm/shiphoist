@@ -9,6 +9,7 @@ import (
 	"github.com/potibm/shiphoist/internal/core"
 	"github.com/potibm/shiphoist/internal/registry"
 	"github.com/potibm/shiphoist/internal/tui"
+	"github.com/potibm/shiphoist/internal/ui"
 )
 
 const cacheTTLMinutes = 15
@@ -28,9 +29,14 @@ type deps struct {
 	// NewFetcher builds the registry fetcher for the given force-refresh flag.
 	NewFetcher func(forceRefresh bool) (core.RegistryFetcher, error)
 
-	// NewPrompter builds the interactive selector. Returning nil applies every
-	// fetched update without asking, which is the non-interactive path.
-	NewPrompter func() core.Prompter
+	// NewPrompter builds the interactive selector, capping pre-selection at
+	// maxUpdate. It is only asked for when the run is interactive.
+	NewPrompter func(maxUpdate core.UpdateType) core.Prompter
+
+	// IsInteractive reports whether a human can be prompted. Without a
+	// terminal and without --yes there is nobody to ask, so the run has to fail
+	// with advice rather than hang or crash in the TUI library.
+	IsInteractive func() bool
 }
 
 // newDeps returns the real environment.
@@ -41,7 +47,10 @@ func newDeps() deps {
 		NewFetcher: func(forceRefresh bool) (core.RegistryFetcher, error) {
 			return buildFetcher(os.Stderr, forceRefresh)
 		},
-		NewPrompter: func() core.Prompter { return tui.NewHuhPrompter() },
+		NewPrompter: func(maxUpdate core.UpdateType) core.Prompter {
+			return tui.NewHuhPrompter(maxUpdate)
+		},
+		IsInteractive: func() bool { return ui.CanPrompt(os.Stderr) },
 	}
 }
 
