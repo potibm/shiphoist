@@ -22,8 +22,14 @@ type Report struct {
 	// than References whenever references were deduplicated.
 	Checked int `json:"checked"`
 
-	// References is the number of declarations discovered in the file.
+	// References is the number of declarations discovered in the file, after
+	// filtering. The file's true image count is len(References) plus
+	// len(Filtered).
 	References int `json:"references"`
+
+	// Filtered are the references removed before the registry was consulted,
+	// so a run never silently under-reports what it looked at.
+	Filtered []Filtered `json:"filtered"`
 
 	// ElapsedMS is the wall time spent on the registry phase, in milliseconds.
 	ElapsedMS int64 `json:"elapsed_ms"`
@@ -45,11 +51,28 @@ type Failure struct {
 	Message string `json:"message"`
 }
 
+// Filtered records one reference removed before the registry was consulted,
+// either by an inline directive in the file or by a command-line filter.
+//
+// The line number is carried so the list can be ordered as it appears in the
+// file, and so a report can point at what to edit.
+type Filtered struct {
+	// Image is the repository that was skipped.
+	Image string `json:"image"`
+
+	// LineNumber is where the reference is declared.
+	LineNumber int `json:"line_number"`
+
+	// Reason is why it was skipped, from the reason constants in the
+	// discovery package.
+	Reason string `json:"reason"`
+}
+
 // reportAlias breaks the recursion into MarshalJSON.
 type reportAlias Report
 
-// MarshalJSON guarantees Updates and Failures serialise as arrays, never null,
-// however the report was built.
+// MarshalJSON guarantees the slices serialise as arrays, never null, however
+// the report was built.
 //
 // A nil slice would otherwise reach a consumer as `null`, so every machine
 // reader would have to handle both shapes. Enforcing it here rather than in a
@@ -65,5 +88,22 @@ func (r Report) MarshalJSON() ([]byte, error) {
 		normalised.Failures = []Failure{}
 	}
 
+	if normalised.Filtered == nil {
+		normalised.Filtered = []Filtered{}
+	}
+
 	return json.Marshal(normalised)
+}
+
+// FilteredDiscoverer is a Discoverer that can account for what it removed.
+//
+// Filtering happens at discovery, where the file is still available, so a
+// discoverer is the only place that can honour an inline directive. Callers use
+// this to state the skips in a report rather than under-reporting the run.
+type FilteredDiscoverer interface {
+	Discoverer
+
+	// Filtered returns the references removed before the registry was
+	// consulted, in file order.
+	Filtered() []Filtered
 }
