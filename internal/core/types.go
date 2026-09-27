@@ -51,8 +51,8 @@ type ImageUpdate struct {
 	FilePath   string `json:"file_path"`
 	LineNumber int    `json:"line_number"`
 
-	// Identity of the declaration site. Empty for formats without named
-	// services (e.g. a Dockerfile stage).
+	// Identity of the declaration site. For a Compose file this is the service
+	// name; for a Dockerfile it is the build stage.
 	ServiceName string `json:"service_name"`
 
 	// Current state

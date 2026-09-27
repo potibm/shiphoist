@@ -354,3 +354,55 @@ func TestFilePatcher_Patch_SameRepoOnSeparateLines(t *testing.T) {
 		t.Errorf("expected only the alpine line to change.\nExpected:\n%s\nGot:\n%s", want, got)
 	}
 }
+
+// A Dockerfile FROM line is patched the same way as a Compose image: the
+// original text is replaced in place, so the instruction, its flags, the stage
+// alias and any trailing comment all survive.
+func TestFilePatcher_PatchesDockerfileFrom(t *testing.T) {
+	const dockerfile = `FROM --platform=linux/amd64 node:22 AS builder
+WORKDIR /app
+FROM node:22-alpine AS deps # keep in sync
+FROM scratch
+COPY --from=builder /out /
+`
+
+	path := writeTempFile(t, "Dockerfile", dockerfile)
+
+	updates := []core.ImageUpdate{
+		{
+			FilePath:       path,
+			LineNumber:     1,
+			ServiceName:    "builder",
+			OriginalString: "node:22",
+			ImageName:      "node",
+			NewTag:         "22.4",
+			NewDigest:      "sha256:new",
+		},
+		{
+			FilePath:       path,
+			LineNumber:     3,
+			ServiceName:    "deps",
+			OriginalString: "node:22-alpine",
+			ImageName:      "node",
+			NewTag:         "22.5-alpine",
+			NewDigest:      "sha256:new2",
+		},
+	}
+
+	if err := (&FilePatcher{}).Patch(context.Background(), path, updates); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := readFile(t, path)
+
+	want := `FROM --platform=linux/amd64 node:22.4@sha256:new AS builder
+WORKDIR /app
+FROM node:22.5-alpine@sha256:new2 AS deps # keep in sync
+FROM scratch
+COPY --from=builder /out /
+`
+
+	if got != want {
+		t.Errorf("unexpected result:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
