@@ -3,8 +3,10 @@ package engine
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/potibm/shiphoist/internal/core"
+	"github.com/potibm/shiphoist/internal/ui"
 )
 
 const testFilePath = "docker-compose.yml"
@@ -155,6 +158,19 @@ func newVerboseTestPipeline(
 	return pipeline, out
 }
 
+// runProcess runs the pipeline and returns the report, failing the test on an
+// unexpected error. Tests about the error path call ProcessFile directly.
+func runProcess(t *testing.T, pipeline *Pipeline) *core.Report {
+	t.Helper()
+
+	report, err := pipeline.ProcessFile(context.Background(), testFilePath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	return report
+}
+
 func TestProcessFile_AppliesAllSelectedUpdates(t *testing.T) {
 	discoverer := &stubDiscoverer{updates: testUpdates()}
 	fetcher := &stubFetcher{}
@@ -163,10 +179,7 @@ func TestProcessFile_AppliesAllSelectedUpdates(t *testing.T) {
 
 	pipeline, _ := newTestPipeline(discoverer, fetcher, prompter, patcher)
 
-	got, err := pipeline.ProcessFile(context.Background(), testFilePath)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	got := runProcess(t, pipeline).Updates
 
 	if len(got) != 3 {
 		t.Fatalf("expected 3 updates, got %d", len(got))
@@ -234,10 +247,7 @@ func TestProcessFile_NoImagesDiscovered(t *testing.T) {
 
 	pipeline, _ := newTestPipeline(discoverer, fetcher, prompter, patcher)
 
-	got, err := pipeline.ProcessFile(context.Background(), testFilePath)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	got := runProcess(t, pipeline).Updates
 
 	if len(got) != 0 {
 		t.Errorf("expected no updates, got %d", len(got))
@@ -264,10 +274,12 @@ func TestProcessFile_AllFetchesFail(t *testing.T) {
 
 	pipeline, out := newTestPipeline(discoverer, fetcher, prompter, patcher)
 
-	got, err := pipeline.ProcessFile(context.Background(), testFilePath)
+	report, err := pipeline.ProcessFile(context.Background(), testFilePath)
 	if err != nil {
 		t.Fatalf("a per-image registry error must not fail the run, got %v", err)
 	}
+
+	got := report.Updates
 
 	if len(got) != 0 {
 		t.Errorf("expected no updates, got %d", len(got))
@@ -298,10 +310,7 @@ func TestProcessFile_PartialFetchFailureStillPatches(t *testing.T) {
 
 	pipeline, _ := newTestPipeline(discoverer, fetcher, prompter, patcher)
 
-	got, err := pipeline.ProcessFile(context.Background(), testFilePath)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	got := runProcess(t, pipeline).Updates
 
 	if len(got) != 2 {
 		t.Fatalf("expected the 2 healthy images to survive, got %d", len(got))
@@ -324,10 +333,7 @@ func TestProcessFile_UnselectedUpdatesAreDropped(t *testing.T) {
 
 	pipeline, _ := newTestPipeline(discoverer, fetcher, prompter, patcher)
 
-	got, err := pipeline.ProcessFile(context.Background(), testFilePath)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	got := runProcess(t, pipeline).Updates
 
 	if len(got) != 0 {
 		t.Errorf("expected no updates, got %d", len(got))
@@ -360,10 +366,7 @@ func TestProcessFile_PrompterNarrowsSelection(t *testing.T) {
 
 	pipeline, _ := newTestPipeline(discoverer, fetcher, prompter, patcher)
 
-	got, err := pipeline.ProcessFile(context.Background(), testFilePath)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	got := runProcess(t, pipeline).Updates
 
 	if len(got) != 1 {
 		t.Fatalf("expected 1 update, got %d", len(got))
@@ -386,10 +389,7 @@ func TestProcessFile_PrompterRejectsEverything(t *testing.T) {
 
 	pipeline, _ := newTestPipeline(discoverer, fetcher, prompter, patcher)
 
-	got, err := pipeline.ProcessFile(context.Background(), testFilePath)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	got := runProcess(t, pipeline).Updates
 
 	if len(got) != 0 {
 		t.Errorf("expected no updates, got %d", len(got))
@@ -431,10 +431,7 @@ func TestProcessFile_NilPrompterAppliesEverything(t *testing.T) {
 		Out:        &bytes.Buffer{},
 	}
 
-	got, err := pipeline.ProcessFile(context.Background(), testFilePath)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	got := runProcess(t, pipeline).Updates
 
 	if len(got) != 3 {
 		t.Errorf("expected all 3 updates to be applied, got %d", len(got))
@@ -501,10 +498,7 @@ func TestProcessFile_ConcurrentFetchesAreRaceFree(t *testing.T) {
 
 	pipeline, out := newTestPipeline(discoverer, fetcher, prompter, patcher)
 
-	got, err := pipeline.ProcessFile(context.Background(), testFilePath)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	got := runProcess(t, pipeline).Updates
 
 	if len(got) != imageCount {
 		t.Errorf("expected %d updates, got %d", imageCount, len(got))
@@ -545,5 +539,174 @@ func TestPipeline_OutputDefaultsToStdout(t *testing.T) {
 
 	if pipeline.output() == nil {
 		t.Error("expected a non-nil default output writer")
+	}
+}
+
+func TestProcessFile_ReportDescribesTheRun(t *testing.T) {
+	discoverer := &stubDiscoverer{updates: testUpdates()}
+	fetcher := &stubFetcher{failing: map[string]error{"postgres": errRegistry}}
+	pipeline, _ := newTestPipeline(discoverer, fetcher, &stubPrompter{}, &stubPatcher{})
+
+	report := runProcess(t, pipeline)
+
+	if report.File != testFilePath {
+		t.Errorf("expected the file to be recorded, got %q", report.File)
+	}
+
+	if report.References != 3 {
+		t.Errorf("expected 3 references, got %d", report.References)
+	}
+
+	if report.Checked != 3 {
+		t.Errorf("expected 3 lookups, got %d", report.Checked)
+	}
+
+	if !report.Written {
+		t.Error("expected a real run that patched the file to report written")
+	}
+
+	if report.DryRun {
+		t.Error("expected a real run not to report dry_run")
+	}
+
+	if len(report.Updates) != 2 {
+		t.Errorf("expected 2 applied updates, got %d", len(report.Updates))
+	}
+}
+
+// A failed image is reported, not dropped: a CI job has to be able to see that
+// something was skipped and why.
+func TestProcessFile_ReportCarriesFailures(t *testing.T) {
+	discoverer := &stubDiscoverer{updates: testUpdates()}
+	fetcher := &stubFetcher{failing: map[string]error{"postgres": errRegistry}}
+	pipeline, _ := newTestPipeline(discoverer, fetcher, &stubPrompter{}, &stubPatcher{})
+
+	report := runProcess(t, pipeline)
+
+	if len(report.Failures) != 1 {
+		t.Fatalf("expected 1 failure, got %+v", report.Failures)
+	}
+
+	failure := report.Failures[0]
+	if !strings.Contains(failure.Image, "postgres") {
+		t.Errorf("expected the failing image to be named, got %q", failure.Image)
+	}
+
+	if failure.Message != errRegistry.Error() {
+		t.Errorf("expected the cause to be reported, got %q", failure.Message)
+	}
+
+	// A partial failure is still a run that happened, not an error.
+	if !report.Written {
+		t.Error("expected the surviving updates to have been written")
+	}
+}
+
+func TestProcessFile_ReportOnAnEmptyFile(t *testing.T) {
+	pipeline, _ := newTestPipeline(&stubDiscoverer{}, &stubFetcher{}, &stubPrompter{}, &stubPatcher{})
+
+	report := runProcess(t, pipeline)
+
+	if report.References != 0 || report.Checked != 0 || report.Written {
+		t.Errorf("expected an empty, unwritten report, got %+v", report)
+	}
+
+	// The report must still be a well-formed document, since a run that found
+	// nothing is exactly when a CI job reads the JSON.
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshalling: %v", err)
+	}
+
+	for _, want := range []string{`"updates":[]`, `"failures":[]`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Errorf("expected %s in:\n%s", want, encoded)
+		}
+	}
+}
+
+// A dry run must report exactly what a real run would have applied, without
+// touching the file.
+func TestProcessFile_DryRunReportsWithoutPatching(t *testing.T) {
+	discoverer := &stubDiscoverer{updates: testUpdates()}
+	patcher := &stubPatcher{}
+	pipeline, _ := newTestPipeline(discoverer, &stubFetcher{}, &stubPrompter{}, patcher)
+	pipeline.DryRun = true
+
+	report := runProcess(t, pipeline)
+
+	if patcher.calls.Load() != 0 {
+		t.Errorf("expected no patching in a dry run, ran %d times", patcher.calls.Load())
+	}
+
+	if report.Written {
+		t.Error("expected a dry run not to report written")
+	}
+
+	if !report.DryRun {
+		t.Error("expected a dry run to report dry_run")
+	}
+
+	if len(report.Updates) != 3 {
+		t.Errorf("expected the dry run to report the 3 updates it would apply, got %d", len(report.Updates))
+	}
+}
+
+// Nothing selected and a dry run are different outcomes, and the report has to
+// distinguish them.
+func TestProcessFile_DryRunWithNothingSelected(t *testing.T) {
+	patcher := &stubPatcher{}
+	pipeline, _ := newTestPipeline(
+		&stubDiscoverer{updates: testUpdates()},
+		&stubFetcher{},
+		&stubPrompter{keep: map[string]bool{}},
+		patcher,
+	)
+	pipeline.DryRun = true
+
+	report := runProcess(t, pipeline)
+
+	if !report.DryRun || report.Written {
+		t.Errorf("expected dry_run without written, got %+v", report)
+	}
+
+	if len(report.Updates) != 0 {
+		t.Errorf("expected no updates, got %d", len(report.Updates))
+	}
+}
+
+func TestCoreFailures(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []ui.Failure
+		want  []core.Failure
+	}{
+		{
+			name:  "no failures",
+			input: nil,
+			want:  []core.Failure{},
+		},
+		{
+			name:  "label and cause are carried over",
+			input: []ui.Failure{{Label: "[db] postgres", Err: errRegistry}},
+			want: []core.Failure{
+				{Image: "[db] postgres", Message: errRegistry.Error()},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := coreFailures(tt.input)
+
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("expected %+v, got %+v", tt.want, got)
+			}
+
+			// The result is serialised, so it must never be nil.
+			if got == nil {
+				t.Error("expected an initialised slice")
+			}
+		})
 	}
 }

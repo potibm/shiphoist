@@ -18,30 +18,44 @@ const (
 // ImageUpdate carries the state of an update throughout the application.
 type ImageUpdate struct {
 	// Localization for surgical patching
-	FilePath   string
-	LineNumber int
+	FilePath   string `json:"file_path"`
+	LineNumber int    `json:"line_number"`
 
 	// Identity of the declaration site. Empty for formats without named
 	// services (e.g. a Dockerfile stage).
-	ServiceName string
+	ServiceName string `json:"service_name"`
 
 	// Current state
-	OriginalString string
-	ImageName      string
-	OldTag         string
-	OldDigest      string // Holds the existing hash (e.g., "sha256:abcdef...")
+	OriginalString string `json:"original_string"`
+	ImageName      string `json:"image"`
+	OldTag         string `json:"old_tag"`
+	OldDigest      string `json:"old_digest"` // Holds the existing hash (e.g., "sha256:abcdef...")
 
 	// Target state (from registry)
-	NewTag     string
-	NewDigest  string
-	UpdateType UpdateType
+	NewTag     string     `json:"new_tag"`
+	NewDigest  string     `json:"new_digest"`
+	UpdateType UpdateType `json:"update_type"`
 
 	// UI state
-	Selected         bool   // Initially selected (True for patch/minor)
-	OldTagMissing    bool   // True if the current tag no longer exists in the registry (404)
-	CurrentDigest    string // Registry-resolved digest of the current (old) tag
-	NoCompatibleTags bool   // True if ListTags succeeded but no SemVer-compatible candidates found
-	MajorTag         string // Newest tag if it's a major bump (not auto-selected)
+	//
+	// Selected is the initial pre-selection: true for patch and minor, false
+	// for major, which must be opted into.
+	Selected bool `json:"selected"`
+
+	// OldTagMissing reports that the current tag no longer exists in the
+	// registry (404).
+	OldTagMissing bool `json:"old_tag_missing"`
+
+	// CurrentDigest is the registry-resolved digest of the current (old) tag.
+	CurrentDigest string `json:"current_digest"`
+
+	// NoCompatibleTags reports that ListTags succeeded but found no
+	// SemVer-compatible candidates.
+	NoCompatibleTags bool `json:"no_compatible_tags"`
+
+	// MajorTag is the newest tag when it would be a major bump. It is reported
+	// but never pre-selected.
+	MajorTag string `json:"major_tag"`
 }
 
 // Key uniquely identifies an update by its declaration site.

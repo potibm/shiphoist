@@ -38,28 +38,28 @@ func runUpdate(d deps, filePath string, forceRefresh, verbose bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	updates, err := pipeline.ProcessFile(ctx, filePath)
+	report, err := pipeline.ProcessFile(ctx, filePath)
 	if err != nil {
 		return err
 	}
 
-	printApplyResult(d.Out, updates)
+	printApplyResult(d.Out, report)
 
 	return nil
 }
 
 // printApplyResult reports what the run did. An empty result means every
 // discovered reference was already current.
-func printApplyResult(w io.Writer, updates []core.ImageUpdate) {
-	if len(updates) == 0 {
+func printApplyResult(w io.Writer, report *core.Report) {
+	if len(report.Updates) == 0 {
 		fmt.Fprintln(w, "✅ Everything is up to date! No changes needed.")
 
 		return
 	}
 
-	fmt.Fprintf(w, "✅ Successfully applied %d updates:\n\n", len(updates))
+	fmt.Fprintf(w, "%s\n\n", applyHeadline(report))
 
-	for _, u := range updates {
+	for _, u := range report.Updates {
 		if u.UpdateType == core.UpdateTypeNone {
 			fmt.Fprintf(w, "  📌 %s: pinned to new digest\n", u.Label())
 
@@ -68,4 +68,24 @@ func printApplyResult(w io.Writer, updates []core.ImageUpdate) {
 
 		fmt.Fprintf(w, "  🚀 %s: %s -> %s (%s)\n", u.Label(), u.OldTag, u.NewTag, u.UpdateType)
 	}
+}
+
+// applyHeadline states the outcome. A dry run must not read like a write, so it
+// is called out explicitly rather than by omission.
+func applyHeadline(report *core.Report) string {
+	count := fmt.Sprintf("%d %s", len(report.Updates), plural(len(report.Updates), "update", "updates"))
+
+	if report.DryRun {
+		return fmt.Sprintf("🔍 Would apply %s (dry run, nothing was written):", count)
+	}
+
+	return fmt.Sprintf("✅ Successfully applied %s:", count)
+}
+
+func plural(n int, singular, many string) string {
+	if n == 1 {
+		return singular
+	}
+
+	return many
 }

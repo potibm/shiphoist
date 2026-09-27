@@ -29,23 +29,33 @@ type Pipeline struct {
 	// Verbose reports one line per image instead of a single updating
 	// progress bar.
 	Verbose bool
+
+	// DryRun resolves and reports the updates without writing to the file.
+	// The reported updates are exactly what a real run would have applied.
+	DryRun bool
 }
 
 // ProcessFile runs the discovered images through the update pipeline and
-// returns the updates that were applied.
+// returns a report of what happened.
 //
 // References that resolve to the same registry answer are fetched once and the
 // outcome shared, so a Compose file reusing one image across many services
 // costs a single round-trip.
-func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) ([]core.ImageUpdate, error) {
+//
+// A report is returned whenever the run itself succeeded, including when
+// individual images failed: those are listed in Report.Failures. An error means
+// the run could not be completed, and no report is returned.
+func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) (*core.Report, error) {
 	updates, err := p.Discoverer.Discover(ctx, filePath)
 	if err != nil {
 		return nil, fmt.Errorf("discovery phase failed for %s: %w", filePath, err)
 	}
 
-	totalUpdates := len(updates)
-	if totalUpdates == 0 {
-		return nil, nil
+	report := newReport(filePath, len(updates))
+	report.DryRun = p.DryRun
+
+	if len(updates) == 0 {
+		return report, nil
 	}
 
 	started := time.Now()
@@ -54,11 +64,18 @@ func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) ([]core.Ima
 
 	fetched := p.fetchAll(ctx, groups, progress)
 
-	summary := progressSummary(len(groups), totalUpdates, time.Since(started), len(progress.Failures()))
-	progress.Stop(summary)
+	// The failure count has to be known before Stop, which erases the line and
+	// prints the summary that quotes it.
+	failures := progress.Failures()
+	elapsed := time.Since(started)
+	progress.Stop(progressSummary(len(groups), report.References, elapsed, len(failures)))
+
+	report.Checked = len(groups)
+	report.ElapsedMS = elapsed.Milliseconds()
+	report.Failures = coreFailures(failures)
 
 	if len(fetched) == 0 {
-		return nil, nil
+		return report, nil
 	}
 
 	selectedUpdates := fetched
@@ -70,14 +87,24 @@ func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) ([]core.Ima
 	}
 
 	if len(selectedUpdates) == 0 {
-		return nil, nil
+		return report, nil
+	}
+
+	// A dry run reports the selection but never touches the file.
+	if p.DryRun {
+		report.Updates = selectedUpdates
+
+		return report, nil
 	}
 
 	if err := p.Patcher.Patch(ctx, filePath, selectedUpdates); err != nil {
 		return nil, fmt.Errorf("failed to patch file %s: %w", filePath, err)
 	}
 
-	return selectedUpdates, nil
+	report.Updates = selectedUpdates
+	report.Written = true
+
+	return report, nil
 }
 
 // output returns the configured output sink, defaulting to stdout.

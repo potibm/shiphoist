@@ -475,3 +475,61 @@ func assertContains(t *testing.T, got, want string) {
 		t.Errorf("expected %q in:\n%s", want, got)
 	}
 }
+
+// A dry run must promise exactly what a real run would write, and say so in the
+// output rather than claiming success.
+func TestPrintApplyResult_DryRunDoesNotClaimSuccess(t *testing.T) {
+	report := &core.Report{
+		DryRun: true,
+		Updates: []core.ImageUpdate{
+			testResolved("db", "postgres", core.UpdateTypeMinor),
+		},
+	}
+
+	var out bytes.Buffer
+	printApplyResult(&out, report)
+
+	assertContains(t, out.String(), "Would apply 1 update (dry run, nothing was written):")
+	assertContains(t, out.String(), "[db] postgres: 16.2 -> 16.3 (minor)")
+
+	if strings.Contains(out.String(), "Successfully applied") {
+		t.Errorf("a dry run must not report a write:\n%s", out.String())
+	}
+}
+
+func TestPrintApplyResult_ReportsPinnedDigest(t *testing.T) {
+	report := &core.Report{
+		Written: true,
+		Updates: []core.ImageUpdate{
+			testResolved("web", "nginx", core.UpdateTypeNone),
+		},
+	}
+
+	var out bytes.Buffer
+	printApplyResult(&out, report)
+
+	assertContains(t, out.String(), "Successfully applied 1 update:")
+	assertContains(t, out.String(), "[web] nginx: pinned to new digest")
+}
+
+func TestPrintApplyResult_EmptyReport(t *testing.T) {
+	var out bytes.Buffer
+	printApplyResult(&out, &core.Report{})
+
+	assertContains(t, out.String(), "Everything is up to date")
+}
+
+// testResolved is a resolved, selected update as the report would carry it.
+func testResolved(service, image string, updateType core.UpdateType) core.ImageUpdate {
+	return core.ImageUpdate{
+		FilePath:    "docker-compose.yml",
+		LineNumber:  4,
+		ServiceName: service,
+		ImageName:   image,
+		OldTag:      "16.2",
+		NewTag:      "16.3",
+		NewDigest:   "sha256:newdigest",
+		UpdateType:  updateType,
+		Selected:    true,
+	}
+}

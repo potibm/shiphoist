@@ -138,6 +138,9 @@ func (p *Progress) Fail(label string, err error) {
 // Stop erases the progress line, prints the summary, then prints any collected
 // failures. It returns those failures so the caller can fold them into an exit
 // code or a machine-readable report.
+//
+// Stop clears the collection, so a caller that needs the count *before* the
+// summary is printed must read Failures first.
 func (p *Progress) Stop(summary string) []Failure {
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -201,17 +201,21 @@ func TestProcessFile_SharedImageFetchedOnceButPatchedEverywhere(t *testing.T) {
 
 	pipeline, out := newTestPipeline(discoverer, fetcher, prompter, patcher)
 
-	got, err := pipeline.ProcessFile(context.Background(), testFilePath)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	report := runProcess(t, pipeline)
 
 	if calls := fetcher.calls.Load(); calls != 1 {
 		t.Errorf("expected 1 registry lookup for 8 identical references, got %d", calls)
 	}
 
-	if len(got) != serviceCount {
-		t.Fatalf("expected %d updates to patch, got %d", serviceCount, len(got))
+	// The report must account for both numbers, or a deduplicated run looks
+	// like a truncated one.
+	if report.Checked != 1 || report.References != serviceCount {
+		t.Errorf("expected 1 lookup over %d references, got %d over %d",
+			serviceCount, report.Checked, report.References)
+	}
+
+	if len(report.Updates) != serviceCount {
+		t.Fatalf("expected %d updates to patch, got %d", serviceCount, len(report.Updates))
 	}
 
 	if len(patcher.applied) != serviceCount {

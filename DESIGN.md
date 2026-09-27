@@ -155,6 +155,48 @@ services apply the change to both.
 degrades to just the image name when the source format has no named service.
 
 
+## The Run Report
+
+`Pipeline.ProcessFile` returns a `core.Report` rather than a bare slice of
+updates. A slice cannot express the outcomes a caller legitimately needs to act
+on: an image that could not be checked, a run that checked fewer images than it
+found references because they deduplicated, or a run that resolved everything
+but wrote nothing.
+
+```go
+type Report struct {
+    File       string        `json:"file"`
+    Updates    []ImageUpdate `json:"updates"`
+    Failures   []Failure     `json:"failures"`
+    Checked    int           `json:"checked"`     // distinct registry lookups
+    References int           `json:"references"`  // declarations found
+    ElapsedMS  int64         `json:"elapsed_ms"`
+    Written    bool          `json:"written"`
+    DryRun     bool          `json:"dry_run"`
+}
+```
+
+Two decisions are load-bearing:
+
+* **A failure is not an error.** A registry that 401s on one image is reported
+  in `Failures` and skipped, and the run still patches everything else. An
+  `error` return means the *run* could not complete — bad YAML, an unwritable
+  file, a cancelled context — and then no report is returned at all. This keeps
+  "some images failed" separable from "shiphoist did not run".
+* **`Written` and `DryRun` are separate.** A dry run that resolved three updates
+  reports `dry_run: true, written: false`; a run where the user deselected
+  everything reports `dry_run: false, written: false`. A single boolean could not
+  tell those apart, and a CI job needs to.
+
+`MarshalJSON` normalises nil slices to `[]`. A report built by any route
+serialises to the same shape, so a machine reader never has to handle both `[]`
+and `null`. The guarantee lives on the type rather than in a constructor
+precisely so it cannot be forgotten.
+
+`Report` is also the payload a future `--json` serialises verbatim, which is why
+the tags are snake_case and every field is present: adding a field to a JSON
+document is safe, renaming one is not.
+
 ## Core Interfaces
 
 Clean separation of responsibilities for easy extensibility and testability.
