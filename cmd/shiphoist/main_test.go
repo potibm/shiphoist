@@ -1008,3 +1008,106 @@ func TestNewRootCmd_RoutesExclude(t *testing.T) {
 
 	assertContains(t, h.out.String(), "redis (line 5): excluded")
 }
+
+// dockerfileFixture exercises the shapes a Dockerfile has that a Compose file
+// does not: a platform flag, a build argument, `scratch`, and a `COPY --from`
+// that must never be read as a base image.
+const dockerfileFixture = `ARG NODE_VERSION=22
+FROM --platform=linux/amd64 node:$NODE_VERSION AS builder
+WORKDIR /app
+FROM node:22-alpine AS deps # keep in sync
+RUN npm ci
+FROM scratch
+COPY --from=deps /out /out
+`
+
+// newDockerfileHarness writes a Dockerfile fixture.
+func newDockerfileHarness(t *testing.T) *harness {
+	t.Helper()
+
+	h := newHarness(t)
+	h.compose = writeCompose(t, "Dockerfile", dockerfileFixture)
+
+	return h
+}
+
+func TestRunUpdate_DiscoversDockerfileStages(t *testing.T) {
+	h := newDockerfileHarness(t)
+
+	if err := runUpdate(h.deps, options{DryRun: true, Yes: true}, h.compose); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := h.out.String()
+
+	// The stage alias is the identifier, so the user can tell stages apart.
+	assertContains(t, out, "[deps] node")
+
+	// The variable reference and `scratch` are reported rather than dropped.
+	assertContains(t, out, "Would apply 1 update")
+	assertContains(t, out, "Not checked (2)")
+	assertContains(t, out, "node:$NODE_VERSION")
+	assertContains(t, out, "scratch")
+}
+
+func TestRunUpdate_PatchesDockerfile(t *testing.T) {
+	h := newDockerfileHarness(t)
+
+	if err := runUpdate(h.deps, options{Yes: true}, h.compose); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	written := readFile(t, h.compose)
+
+	// The instruction, the alias and the trailing comment all survive. The
+	// harness stub resolves 22-alpine to 22-alpine.1.
+	if !strings.Contains(written, "FROM node:22-alpine.1@sha256:newdigest AS deps # keep in sync") {
+		t.Errorf("expected the FROM line to be rewritten in place:\n%s", written)
+	}
+
+	// The build-argument stage and scratch are untouched.
+	if !strings.Contains(written, "FROM --platform=linux/amd64 node:$NODE_VERSION AS builder") {
+		t.Errorf("expected the variable stage to be untouched:\n%s", written)
+	}
+
+	if !strings.Contains(written, "FROM scratch") {
+		t.Errorf("expected scratch to be untouched:\n%s", written)
+	}
+
+	// A COPY --from must never be rewritten into a base image.
+	if strings.Contains(written, "FROM deps") {
+		t.Errorf("a COPY --from was treated as a base image:\n%s", written)
+	}
+}
+
+// --exclude works on Dockerfiles too, since it only needs the repository.
+func TestRunUpdate_ExcludeAppliesToDockerfiles(t *testing.T) {
+	h := newDockerfileHarness(t)
+
+	opts := options{DryRun: true, Yes: true, Exclude: `^node$`}
+	if err := runUpdate(h.deps, opts, h.compose); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Nothing is left to apply, so the run reports nothing to do rather than an
+	// empty list of updates.
+	assertContains(t, h.out.String(), "Everything is up to date")
+
+	// All three skipped references are accounted for, whatever removed them.
+	assertContains(t, h.out.String(), "Not checked (3)")
+	assertContains(t, h.out.String(), "variable-reference")
+	assertContains(t, h.out.String(), "reserved-base")
+	assertContains(t, h.out.String(), "excluded")
+}
+
+// A Compose file keeps working unchanged: the format is chosen per file.
+func TestRunUpdate_ComposeStillDetected(t *testing.T) {
+	h := newHarness(t)
+
+	if err := runUpdate(h.deps, options{DryRun: true, Yes: true}, h.compose); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertContains(t, h.out.String(), "[db] postgres")
+	assertContains(t, h.out.String(), "[cache] redis")
+}

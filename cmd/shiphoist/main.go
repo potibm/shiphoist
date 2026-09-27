@@ -16,7 +16,7 @@ var (
 )
 
 const (
-	rootShort = "Interactively update and SHA256-pin Docker images in Compose files"
+	rootShort = "Interactively update and SHA256-pin Docker images in Compose files and Dockerfiles"
 	checkUse  = "check [image-reference]"
 )
 
@@ -39,9 +39,14 @@ func newRootCmd(d deps) *cobra.Command {
 	var opts options
 
 	rootCmd := &cobra.Command{
-		Use:   "shiphoist [path-to-docker-compose.yml]",
+		Use:   "shiphoist [path-to-compose-file-or-Dockerfile]",
 		Short: rootShort,
-		Args:  cobra.ExactArgs(1),
+		Long: `Interactively update and SHA256-pin the images in a Docker Compose file or a
+Dockerfile. The format is detected from the file name.
+
+Example: shiphoist docker-compose.yml
+        shiphoist Dockerfile`,
+		Args: cobra.ExactArgs(1),
 		// A failure is reported once, by main. Printing it here as well would
 		// duplicate it, and usage text would bury the actual cause.
 		SilenceUsage:  true,

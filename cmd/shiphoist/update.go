@@ -28,7 +28,7 @@ func runUpdate(d deps, opts options, filePath string) error {
 		return err
 	}
 
-	discoverer, err := buildDiscoverer(opts)
+	discoverer, err := buildDiscoverer(opts, filePath)
 	if err != nil {
 		return err
 	}

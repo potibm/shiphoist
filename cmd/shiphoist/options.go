@@ -45,16 +45,17 @@ type options struct {
 	Exclude string
 }
 
-// buildDiscoverer assembles the discovery chain.
+// buildDiscoverer assembles the discovery chain for a file.
 //
-// The regex is compiled here rather than where it is used, so a bad pattern
-// costs no registry traffic. An empty --exclude installs no decorator at all,
-// which keeps the common path free of an extra layer.
-func buildDiscoverer(opts options) (core.Discoverer, error) {
-	compose := &discovery.ComposeDiscoverer{}
+// The format follows from the file name, so `shiphoist Dockerfile` needs no
+// extra flag. The regex is compiled here rather than where it is used, so a bad
+// pattern costs no registry traffic. An empty --exclude installs no decorator at
+// all, which keeps the common path free of an extra layer.
+func buildDiscoverer(opts options, filePath string) (core.Discoverer, error) {
+	discoverer := discovery.ForFile(filePath)
 
 	if strings.TrimSpace(opts.Exclude) == "" {
-		return compose, nil
+		return discoverer, nil
 	}
 
 	pattern, err := regexp.Compile(opts.Exclude)
@@ -62,7 +63,7 @@ func buildDiscoverer(opts options) (core.Discoverer, error) {
 		return nil, fmt.Errorf("invalid --exclude %q: %w", opts.Exclude, err)
 	}
 
-	return &discovery.ExcludeDiscoverer{Inner: compose, Pattern: pattern}, nil
+	return &discovery.ExcludeDiscoverer{Inner: discoverer, Pattern: pattern}, nil
 }
 
 // filteredFrom returns the references a discoverer removed, or nil for one that
