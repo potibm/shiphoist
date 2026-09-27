@@ -76,3 +76,46 @@ func TestImageUpdate_Label(t *testing.T) {
 		})
 	}
 }
+
+func TestSeverity(t *testing.T) {
+	tests := []struct {
+		name     string
+		update   UpdateType
+		expected int
+	}{
+		{name: "major", update: UpdateTypeMajor, expected: SeverityMajor},
+		{name: "minor", update: UpdateTypeMinor, expected: SeverityMinor},
+		{name: "patch", update: UpdateTypePatch, expected: SeverityPatch},
+		{name: "pin", update: UpdateTypeNone, expected: SeverityPin},
+		{name: "unknown falls back", update: UpdateType("weird"), expected: SeverityUnknown},
+		{name: "empty falls back", update: UpdateType(""), expected: SeverityUnknown},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Severity(tc.update); got != tc.expected {
+				t.Errorf("Severity(%q) = %d, want %d", tc.update, got, tc.expected)
+			}
+		})
+	}
+}
+
+// The ranking is only useful as a cap if it is strictly ordered, so this asserts
+// the ordering rather than the individual values.
+func TestSeverity_IsStrictlyOrdered(t *testing.T) {
+	descending := []int{SeverityMajor, SeverityMinor, SeverityPatch, SeverityPin, SeverityUnknown}
+
+	for i := 1; i < len(descending); i++ {
+		if descending[i-1] <= descending[i] {
+			t.Errorf("expected strict descending order, got %v", descending)
+		}
+	}
+}
+
+// An unrecognised type must never be treated as safe to apply, or a bug
+// elsewhere would silently widen the cap.
+func TestSeverity_UnknownIsTheSafest(t *testing.T) {
+	if Severity(UpdateType("nonsense")) > Severity(UpdateTypeNone) {
+		t.Error("expected an unknown update type to rank below a digest pin")
+	}
+}

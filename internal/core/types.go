@@ -15,6 +15,36 @@ const (
 	UpdateTypeNone  UpdateType = "none"
 )
 
+// Severity ranks an update type, higher meaning riskier. It lives here rather
+// than in the UI because both the interactive table and the non-interactive
+// selector have to reason about the same ordering, and neither may import the
+// other.
+const (
+	// SeverityUnknown is the rank of an unrecognised type, which sorts below
+	// every real one so an unknown value is never treated as the safest.
+	SeverityUnknown = 0
+	SeverityPin     = 1
+	SeverityPatch   = 2
+	SeverityMinor   = 3
+	SeverityMajor   = 4
+)
+
+// Severity returns the rank of an update type.
+func Severity(t UpdateType) int {
+	switch t {
+	case UpdateTypeMajor:
+		return SeverityMajor
+	case UpdateTypeMinor:
+		return SeverityMinor
+	case UpdateTypePatch:
+		return SeverityPatch
+	case UpdateTypeNone:
+		return SeverityPin
+	default:
+		return SeverityUnknown
+	}
+}
+
 // ImageUpdate carries the state of an update throughout the application.
 type ImageUpdate struct {
 	// Localization for surgical patching

@@ -37,39 +37,6 @@ func lineNumberFor(service string) int {
 	return int(crc32.ChecksumIEEE([]byte(service))%1000) + 4
 }
 
-func TestScoreUpdateType(t *testing.T) {
-	tests := []struct {
-		name     string
-		update   core.UpdateType
-		expected int
-	}{
-		{name: "major outranks all", update: core.UpdateTypeMajor, expected: scoreMajor},
-		{name: "minor", update: core.UpdateTypeMinor, expected: scoreMinor},
-		{name: "patch", update: core.UpdateTypePatch, expected: scorePatch},
-		{name: "none", update: core.UpdateTypeNone, expected: scoreNone},
-		{name: "unknown falls back", update: core.UpdateType("weird"), expected: scoreOther},
-		{name: "empty falls back", update: core.UpdateType(""), expected: scoreOther},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := scoreUpdateType(tc.update); got != tc.expected {
-				t.Errorf("scoreUpdateType(%q) = %d, want %d", tc.update, got, tc.expected)
-			}
-		})
-	}
-}
-
-func TestScoreUpdateType_Ordering(t *testing.T) {
-	descending := []int{scoreMajor, scoreMinor, scorePatch, scoreNone, scoreOther}
-
-	for i := 1; i < len(descending); i++ {
-		if descending[i-1] <= descending[i] {
-			t.Errorf("expected strict descending order, got %v", descending)
-		}
-	}
-}
-
 // Identical references across services collapse to a single row.
 func TestGroupUpdates_CollapsesIdenticalReferences(t *testing.T) {
 	updates := []core.ImageUpdate{
@@ -182,20 +149,52 @@ func TestUpdateGroup_SafeToApply(t *testing.T) {
 	tests := []struct {
 		name       string
 		updateType core.UpdateType
+		maxUpdate  core.UpdateType
 		expected   bool
 	}{
-		{name: "patch is safe", updateType: core.UpdateTypePatch, expected: true},
-		{name: "minor is safe", updateType: core.UpdateTypeMinor, expected: true},
-		{name: "pinning is safe", updateType: core.UpdateTypeNone, expected: true},
-		{name: "major is never pre-selected", updateType: core.UpdateTypeMajor, expected: false},
+		{name: "patch is safe", updateType: core.UpdateTypePatch, maxUpdate: core.UpdateTypeMajor, expected: true},
+		{name: "minor is safe", updateType: core.UpdateTypeMinor, maxUpdate: core.UpdateTypeMajor, expected: true},
+		{name: "pinning is safe", updateType: core.UpdateTypeNone, maxUpdate: core.UpdateTypeMajor, expected: true},
+		{
+			name:       "major is never pre-selected",
+			updateType: core.UpdateTypeMajor,
+			maxUpdate:  core.UpdateTypeMajor,
+			expected:   false,
+		},
+		{
+			name:       "minor is withheld by a patch cap",
+			updateType: core.UpdateTypeMinor,
+			maxUpdate:  core.UpdateTypePatch,
+			expected:   false,
+		},
+		{
+			name:       "patch survives a patch cap",
+			updateType: core.UpdateTypePatch,
+			maxUpdate:  core.UpdateTypePatch,
+			expected:   true,
+		},
+		{
+			name:       "pinning survives a minor cap",
+			updateType: core.UpdateTypeNone,
+			maxUpdate:  core.UpdateTypeMinor,
+			expected:   true,
+		},
+		{
+			// The cap is a ceiling the user asked for. It must never be able to
+			// reopen the major-update safety floor.
+			name:       "a major cap still withholds a major",
+			updateType: core.UpdateTypeMajor,
+			maxUpdate:  core.UpdateTypeMajor,
+			expected:   false,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			group := updateGroup{Head: core.ImageUpdate{UpdateType: tc.updateType}}
 
-			if got := group.safeToApply(); got != tc.expected {
-				t.Errorf("safeToApply() = %v, want %v", got, tc.expected)
+			if got := group.safeToApply(tc.maxUpdate); got != tc.expected {
+				t.Errorf("safeToApply(%q) = %v, want %v", tc.maxUpdate, got, tc.expected)
 			}
 		})
 	}
@@ -668,5 +667,46 @@ func assertServices(t *testing.T, updates []core.ImageUpdate, want []string) {
 
 	if !slices.Equal(got, want) {
 		t.Errorf("expected services %v, got %v", want, got)
+	}
+}
+
+// A --mode cap must leave its rows visible but unchecked, so the user can see
+// that a bigger jump exists. The accessible form confirms whatever is
+// preselected, so a withheld row comes back unselected.
+func TestSelectUpdates_ModeCapWithholdsButStillShows(t *testing.T) {
+	updates := []core.ImageUpdate{
+		testUpdate("patched", "redis", "7.2.1", "7.2.2", core.UpdateTypePatch),
+		testUpdate("minored", "nginx", "1.25.0", "1.26.0", core.UpdateTypeMinor),
+	}
+
+	prompter, rendered := testPrompter(t)
+	prompter.maxUpdate = core.UpdateTypePatch
+
+	selected, err := prompter.SelectUpdates(updates)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertServices(t, selected, []string{"patched"})
+
+	// Withheld, not hidden: the row is still on screen, so the user can opt in.
+	assertContains(t, rendered.String(), "nginx")
+	assertContains(t, rendered.String(), "1.25.0 → 1.26.0")
+}
+
+func TestSelectCap_DefaultsToMajor(t *testing.T) {
+	// An unset cap must reproduce the original rule, not disable pre-selection.
+	prompter := &HuhPrompter{}
+
+	if got := prompter.selectCap(); got != core.UpdateTypeMajor {
+		t.Errorf("expected the cap to default to major, got %q", got)
+	}
+}
+
+func assertContains(t *testing.T, got, want string) {
+	t.Helper()
+
+	if !strings.Contains(got, want) {
+		t.Errorf("expected %q in:\n%s", want, got)
 	}
 }

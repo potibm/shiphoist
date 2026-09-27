@@ -14,12 +14,6 @@ import (
 )
 
 const (
-	scoreMajor = 4
-	scoreMinor = 3
-	scorePatch = 2
-	scoreNone  = 1
-	scoreOther = 0
-
 	// huhChrome is the width huh spends on its own cursor, checkbox and
 	// padding. Rows are shortened by this much so the surrounding renderer
 	// never has to wrap them.
@@ -42,10 +36,16 @@ type updateGroup struct {
 	Head core.ImageUpdate
 }
 
-// safeToApply reports whether a group is pre-selected. Major updates are never
-// pre-selected, matching the safety rule for ungrouped rows.
-func (g updateGroup) safeToApply() bool {
-	return g.Head.UpdateType != core.UpdateTypeMajor
+// safeToApply reports whether a group is pre-selected under the given cap.
+//
+// A major update is never pre-selected, whatever the cap says. The cap is a
+// ceiling a user asked for, so it can only tighten the automatic selection; it
+// must never be able to reopen the major-update safety floor.
+func (g updateGroup) safeToApply(maxUpdate core.UpdateType) bool {
+	severity := core.Severity(g.Head.UpdateType)
+
+	return severity < core.Severity(core.UpdateTypeMajor) &&
+		severity <= core.Severity(maxUpdate)
 }
 
 // formRunner renders a built form and returns once it is confirmed or aborted.
@@ -77,10 +77,15 @@ type HuhPrompter struct {
 
 	// width is the column budget for the table. Zero means detect it.
 	width int
+
+	// maxUpdate caps the magnitude that may be pre-selected. The zero value
+	// means no cap beyond the built-in rule that a major is never preselected.
+	maxUpdate core.UpdateType
 }
 
-func NewHuhPrompter() *HuhPrompter {
-	return &HuhPrompter{run: runInteractive}
+// NewHuhPrompter returns a prompter that caps pre-selection at maxUpdate.
+func NewHuhPrompter(maxUpdate core.UpdateType) *HuhPrompter {
+	return &HuhPrompter{run: runInteractive, maxUpdate: maxUpdate}
 }
 
 func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpdate, error) {
@@ -90,6 +95,7 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 
 	groups := sortGroupsByRelevance(groupUpdates(updates))
 	rows := rowsFor(groups, h.tableWidth())
+	ceiling := h.selectCap()
 
 	var (
 		selectedKeys []string
@@ -97,7 +103,7 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 	)
 
 	for i, group := range groups {
-		options = append(options, huh.NewOption(rows[i], group.Key).Selected(group.safeToApply()))
+		options = append(options, huh.NewOption(rows[i], group.Key).Selected(group.safeToApply(ceiling)))
 	}
 
 	form := huh.NewForm(
@@ -115,6 +121,17 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 	}
 
 	return h.resolveGroups(groups, selectedKeys)
+}
+
+// selectCap is the highest severity that may be preselected. An unset cap falls
+// back to major, which reproduces the original rule that a major is never
+// preselected.
+func (h *HuhPrompter) selectCap() core.UpdateType {
+	if h.maxUpdate == "" {
+		return core.UpdateTypeMajor
+	}
+
+	return h.maxUpdate
 }
 
 // tableWidth is the column budget available for a row.
@@ -225,7 +242,7 @@ func sortGroupsByRelevance(groups []updateGroup) []updateGroup {
 	copy(ordered, groups)
 
 	sort.SliceStable(ordered, func(i, j int) bool {
-		return scoreUpdateType(ordered[i].Head.UpdateType) > scoreUpdateType(ordered[j].Head.UpdateType)
+		return core.Severity(ordered[i].Head.UpdateType) > core.Severity(ordered[j].Head.UpdateType)
 	})
 
 	return ordered
@@ -345,19 +362,4 @@ func filterByKeys(updates []core.ImageUpdate, keys []string) []core.ImageUpdate 
 	}
 
 	return filtered
-}
-
-func scoreUpdateType(t core.UpdateType) int {
-	switch t {
-	case core.UpdateTypeMajor:
-		return scoreMajor
-	case core.UpdateTypeMinor:
-		return scoreMinor
-	case core.UpdateTypePatch:
-		return scorePatch
-	case core.UpdateTypeNone:
-		return scoreNone
-	default:
-		return scoreOther
-	}
 }
