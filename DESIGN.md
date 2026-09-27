@@ -133,7 +133,7 @@ already names the images, and printing an error line too would be duplication.
 To avoid the weaknesses of pure AST parsers (destroy formatting/comments) and dumb regex scanners (false positives), *shiphoist* uses a two-stage hybrid approach:
 
 1. **Discovery Phase (Parser):**
-   Real parsers read the file and find validated images. The parser provides the **exact line number**. Compose files are parsed with `github.com/goccy/go-yaml` into an AST. Dockerfiles are not parsed with a dedicated dependency — a hand-rolled line scanner handles them, which keeps the module graph small and yields line numbers directly.
+   Real parsers read the file and find validated images. The parser provides the **exact line number**. Compose files are parsed with `github.com/goccy/go-yaml` into an AST. Dockerfiles are scanned line by line: the only instruction that matters is `FROM`, a scan yields line numbers directly, and the existing line-based `Patcher` already needs them.
 2. **Patching Phase (Regex/Line-Scanner):**
    The file is read as raw text. A patcher jumps precisely to the determined line number and performs the regex replacement of the tag *only there*.
 
@@ -386,6 +386,51 @@ A discoverer reports its own skips through `core.FilteredDiscoverer`, and
 `ExcludeDiscoverer.Filtered` returns its skips *plus* the inner discoverer's, so
 a caller only ever asks the outermost one. The engine does not know any of this:
 the CLI assembles the chain, so the CLI is what completes the report with it.
+
+## Two Discoverers, One Contract
+
+Both formats implement the same `Discoverer` interface and the same
+`FilteredDiscoverer` extension, and both produce `ImageUpdate` values the engine
+cannot tell apart. The engine stays format-agnostic; `discovery.ForFile` picks
+the implementation from the file name (`Dockerfile`, `Dockerfile.prod`,
+`app.Dockerfile`; everything else Compose), so neither invocation needs a flag.
+
+Because the contract is shared, so is everything built on it: the selection
+table, the `--exclude` decorator, the report, the exit codes and `--dry-run` all
+work on a Dockerfile with no additional code. `ImageUpdate.ServiceName` carries
+the Compose service name or the Dockerfile stage, which is what lets the table
+label either without a special case.
+
+### Why a Dockerfile is scanned, not parsed
+
+A dedicated parser such as `moby/buildkit` would be more rigorous, at the cost of
+a large dependency for one instruction. The line scan is the same trade already
+made for the progress bar and the table layout: trivial parsing is cheaper to do
+directly than to pull in a framework for.
+
+The scan therefore only claims what it fully understands:
+
+- `FROM` and `as` are matched case-insensitively, and `--platform=...` or any
+  other leading flag is skipped.
+- A `#` only starts a comment when preceded by whitespace, so one inside a token
+  is not mistaken for a comment.
+- A `FROM` with an `AS` and no name is malformed — Docker rejects it too — and is
+  reported as nothing rather than as an unnamed stage.
+- `COPY --from=builder` is not a `FROM`, and neither is text inside a `RUN`.
+
+### What a Dockerfile deliberately does not update
+
+Two kinds of `FROM` are reported as filtered instead of rewritten:
+
+- **Build arguments**, `FROM node:$NODE_VERSION`. A `$` cannot appear in a real
+  image reference, so its presence marks a substitution — and it can be in the
+  *tag*, not just at the start. The `ARG` default is only a default: `--build-arg`
+  overrides it, so rewriting the `ARG` line would change the build's fallback
+  rather than the image the stage actually uses.
+- **`FROM scratch`**, the empty base image, which has no tags or digest.
+
+Both surface through `Report.Filtered` with their own reasons, so a run states
+what it declined to touch instead of quietly covering less than it appears to.
 
 ## Terminal Rendering
 

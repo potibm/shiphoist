@@ -12,6 +12,7 @@ An interactive CLI tool to surgically update Docker image tags in Compose files,
 - **Fetch Deduplication:** A repository used by eight services costs one registry round-trip, not eight.
 - **CI Ready:** `--yes`, `--dry-run`, `--mode`, `--quiet` and a `--json` report on stdout make shiphoist usable as a non-interactive gate.
 - **Single Image Inspector:** Check registry update candidates for any container image without touching a file.
+- **Dockerfile Support:** Update base images in Compose files *and* Dockerfiles, with the format detected from the file name. Multi-stage builds, `AS` aliases and `--platform` flags are handled.
 - **Caching:** Registry queries are cached locally for 15 minutes to keep repeated runs fast.
 
 ## Installation
@@ -31,7 +32,6 @@ Run `shiphoist` against your Compose file:
 ```bash
 shiphoist docker-compose.yml
 ```
-
 *Note: Minor and patch updates are pre-selected by default; major updates require explicit selection.*
 
 Updates are listed as an aligned table, one row per distinct update:
@@ -45,6 +45,31 @@ Updates are listed as an aligned table, one row per distinct update:
 A repository reused across several services collapses into one row marked `×8`. Select it to apply to all of them; selecting it and then deselecting individual services on the follow-up screen applies to just those. Repositories used with *different* tags (for example `postgres:16` and `postgres:16-alpine`) stay on separate rows.
 
 Controls: `space` toggles a row, `ctrl+a` selects all or none, `/` filters, `enter` confirms.
+
+### Dockerfiles
+
+The format is detected from the file name, so a Dockerfile needs no extra flag:
+
+```bash
+shiphoist Dockerfile
+shiphoist Dockerfile.prod
+shiphoist path/to/app.Dockerfile
+```
+
+Each build stage is offered as its own row, labelled with the stage name. Multi-stage builds, `AS` aliases, `--platform` flags and trailing comments are all handled, and only the reference on the `FROM` line is rewritten — the instruction, its flags, the alias and the comment survive untouched:
+
+```dockerfile
+FROM --platform=linux/amd64 golang:1.27@sha256:3680233e... AS compile
+COPY --from=deps /app /app
+FROM scratch
+```
+
+Two kinds of `FROM` are deliberately left alone and reported rather than changed:
+
+- **Build arguments** — `FROM node:$NODE_VERSION`. The `ARG` default is only a default; `docker build --build-arg NODE_VERSION=...` overrides it, so rewriting the `ARG` line would change the build's fallback rather than the image the stage actually uses.
+- **`FROM scratch`** — the empty base image, which has no tags or digest to update.
+
+`# shiphoist-ignore` and `--exclude` work on Dockerfiles too.
 
 ### Check a Single Image
 
@@ -221,7 +246,6 @@ go test -race ./...            # exercises the concurrent fetch fan-out
 
 Upcoming milestones and planned capabilities:
 
-- [ ] Native `Dockerfile` discovery & patching
 - [ ] Opt out of digest pinning with `--style preserve`
 - [ ] Structured logging (`--debug`)
 
