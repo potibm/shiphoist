@@ -340,6 +340,53 @@ The TUI applies the mirror-image idea: identical *results* share a row marked
 `×8`, and selecting one opens a second prompt to narrow which services apply.
 Grouping a result is safe precisely because the fan-out keeps members distinct.
 
+## Filtering References
+
+An image can be left alone two ways, and they are implemented at different
+layers on purpose.
+
+**`# shiphoist-ignore` lives in `ComposeDiscoverer`.** The comment only exists in
+the source text and is gone once the file has been reduced to tokens, so no
+decorator could honour it — by the time an outer layer sees an `ImageUpdate`,
+the comment has already been discarded. The discoverer already holds the raw
+bytes, so it reads the line back.
+
+It is read from the source line starting at the token's `Column`, not from the
+AST. `goccy/go-yaml` attaches comments through two different functions
+(`setLineComment` and `setHeadComment`) depending on which parser path built the
+node, so which node holds the comment is not a stable contract. Scanning the
+text avoids the question and is more precise besides: anything before the
+reference is YAML, and cannot be a trailing comment on it.
+
+The directive must be the **first thing in the comment**, with an optional free-form
+reason after it. A substring match would treat `# TODO shiphoist-ignore later` as
+a directive, and silently skipping an image the user still wants updated is the
+worse error. The line is still inspected when the column is unusable, because
+missing a directive that is there means rewriting an image the user asked us to
+leave alone.
+
+**`--exclude` is a `Discoverer` decorator.** Matching a repository needs only
+`ImageName`, so it is format-agnostic and a decorator is the right shape: the
+Dockerfile discoverer will get it for free.
+
+The pattern is matched against the repository, never the tag. Excluding a
+registry or a namespace is what the flag is for, and matching the full reference
+would make `^nginx$` silently match nothing, since the reference is really
+`nginx:1.25.0`.
+
+### Accounting for what was skipped
+
+`Report.References` counts what discovery *returned*, so a filtered run would
+under-report the file. `Report.Filtered` carries the skipped references with
+their line numbers and reasons, which is what makes "why did CI not update X?"
+answerable. `Report.References` plus `len(Report.Filtered)` is the file's true
+image count.
+
+A discoverer reports its own skips through `core.FilteredDiscoverer`, and
+`ExcludeDiscoverer.Filtered` returns its skips *plus* the inner discoverer's, so
+a caller only ever asks the outermost one. The engine does not know any of this:
+the CLI assembles the chain, so the CLI is what completes the report with it.
+
 ## Terminal Rendering
 
 `internal/ui` holds all presentation logic, free of pipeline concerns so it can

@@ -109,6 +109,42 @@ shiphoist --yes --json docker-compose.yml | jq -r '.updates[] | "\(.service_name
 
 `written` and `dry_run` tell you whether the file was touched; `failures` lists every image that could not be checked; `checked` versus `references` exposes how much deduplication happened.
 
+### Skipping Images
+
+Two ways to leave an image alone. Anything skipped is reported, so a run never
+quietly covers less of the file than it appears to.
+
+**Inline, for a specific image.** Add a `# shiphoist-ignore` comment to the line:
+
+```yaml
+services:
+  web:
+    image: nginx:1.25.0
+  pinned:
+    image: postgres:16.2 # shiphoist-ignore pinned by policy
+```
+
+The directive has to be the first thing in the comment, so a mention is not a
+directive — `# TODO shiphoist-ignore this later` leaves the image updatable. A
+reason may follow the directive.
+
+**By pattern, for a whole set.** `--exclude` takes a regular expression matched
+against the image repository, never the tag:
+
+```bash
+shiphoist --exclude '^ghcr\.io/mymono/' docker-compose.yml
+shiphoist --exclude '^(nginx|redis)$' --yes docker-compose.yml
+```
+
+Both can be combined. Skipped references appear in the report and, for a human
+run, after the summary:
+
+```
+🚫 Not checked (2):
+   • postgres (line 5): ignore-directive
+   • ghcr.io/potibm/billedapparat (line 7): excluded
+```
+
 ### Quiet Mode
 
 `--quiet` suppresses the progress bar, the banner, the summary and the skipped-images block. The result is still printed, because that is the point of the run. Combine it with `--json` for machine-only output.
@@ -186,8 +222,6 @@ go test -race ./...            # exercises the concurrent fetch fan-out
 Upcoming milestones and planned capabilities:
 
 - [ ] Native `Dockerfile` discovery & patching
-- [ ] Inline `# shiphoist-ignore` annotations
-- [ ] `--exclude <regex>` to skip images by pattern
 - [ ] Opt out of digest pinning with `--style preserve`
 - [ ] Structured logging (`--debug`)
 
