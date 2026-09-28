@@ -58,11 +58,9 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 	// Filter by BaseSuffix (allows different build/revision IDs)
 	baseCandidates := allTags.FilterByBaseSuffix(oldParsed.BaseSuffix)
 
-	// Precision fallback: if zero candidates at exact precision, retry ignoring precision
-	candidates := baseCandidates.FilterByPrecision(oldParsed.Precision)
-	if len(candidates) == 0 {
-		candidates = baseCandidates
-	}
+	isCalVer := oldParsed.SemVer.Major() >= calVerThresholdYear
+
+	candidates := selectCandidates(baseCandidates, oldParsed, isCalVer)
 
 	if len(candidates) == 0 {
 		current.NoCompatibleTags = true
@@ -70,15 +68,9 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 		return current, nil
 	}
 
-	samePrefix := candidates.FilterByVPrefix(oldParsed.HasVPrefix)
-	if len(samePrefix) > 0 {
-		candidates = samePrefix
-	}
-
 	candidates = candidates.SortBySemver()
 
-	isCalVer := oldParsed.SemVer.Major() >= calVerThresholdYear
-	sameMajor, majorBump := f.classifyCandidates(candidates, oldParsed, isCalVer)
+	sameMajor, majorBump := classifyCandidates(candidates, oldParsed, isCalVer)
 
 	if len(sameMajor) > 0 {
 		f.processSameMajorUpdate(ctx, &current, sameMajor, oldParsed)
@@ -97,7 +89,57 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 	return current, nil
 }
 
-func (f *DefaultFetcher) classifyCandidates(candidates TagList, oldParsed Tag, isCalVer bool) (TagList, *Tag) {
+// selectCandidates narrows the available tags to the ones eligible for
+// ranking.
+//
+// Tags at the same precision as the current one are preferred, so a pinned
+// 1.2.3 is not handed a 1.2.4.1 that happens to sort higher. That preference is
+// not a filter: when the same-precision set holds nothing newer in the current
+// major, the search widens to every tag sharing the base suffix. Without the
+// widening a channel tag such as 22-alpine or 8.8 could never see 22.23-alpine
+// or 8.10.2, and would report "Up to date" however far behind it was.
+//
+// Precision constrains the shape of a candidate, not the size of the jump: the
+// widest same-major tag wins, so 1.2.3 still becomes 1.4.0 when no 1.2.4 exists.
+func selectCandidates(baseCandidates TagList, oldParsed Tag, isCalVer bool) TagList {
+	strict := baseCandidates.FilterByPrecision(oldParsed.Precision)
+	if hasNewerSameMajor(strict, oldParsed, isCalVer) {
+		return preferVPrefix(strict, oldParsed.HasVPrefix)
+	}
+
+	return preferVPrefix(baseCandidates, oldParsed.HasVPrefix)
+}
+
+// preferVPrefix keeps the tags spelled the same way as the current one, so a
+// v-prefixed tag is never handed a bare replacement. The preference is dropped
+// when nothing matches, because an update in the other style still beats none.
+func preferVPrefix(candidates TagList, hasVPrefix bool) TagList {
+	samePrefix := candidates.FilterByVPrefix(hasVPrefix)
+	if len(samePrefix) > 0 {
+		return samePrefix
+	}
+
+	return candidates
+}
+
+// hasNewerSameMajor reports whether the candidates hold a tag of the current
+// major that is newer than the current tag and shares its CalVer schema.
+func hasNewerSameMajor(candidates TagList, oldParsed Tag, isCalVer bool) bool {
+	if len(candidates) == 0 {
+		return false
+	}
+
+	sameMajor, _ := classifyCandidates(candidates.SortBySemver(), oldParsed, isCalVer)
+	if len(sameMajor) == 0 {
+		return false
+	}
+
+	return sameMajor[len(sameMajor)-1].SemVer.GreaterThan(oldParsed.SemVer)
+}
+
+// classifyCandidates splits candidates into those in the current major and the
+// newest one past it, dropping anything from a different CalVer schema.
+func classifyCandidates(candidates TagList, oldParsed Tag, isCalVer bool) (TagList, *Tag) {
 	var (
 		sameMajor TagList
 		majorBump *Tag

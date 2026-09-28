@@ -217,6 +217,7 @@ Images that could not be checked are listed after the summary:
 Shiphoist handles complex tag topologies across registries:
 
 - **Conservative Updates:** Patches and minor versions are prioritized. Major updates are flagged and require explicit user opt-in.
+- **Precision as a Preference:** A tag is first matched against tags of the same shape, so a pinned `1.2.3` is never handed a longer tag. A channel tag such as `22-alpine` or `8.8` widens to the newest release in its major when nothing newer shares its shape, so it tracks its line instead of reporting "Up to date" forever.
 - **Suffix & Flavor Preservation:** Preserves flavor variants (e.g., `-alpine`, `-fpm-bullseye`) across updates.
 - **JEP-223 Support:** Correctly parses Java/Temurin tags like `17.0.6_10-jre` and finds newer builds.
 - **Build ID Awareness:** Identifies incremental builds (e.g., `linuxserver/*` with `-ls212`, `bitnami/*` with `-r10`).

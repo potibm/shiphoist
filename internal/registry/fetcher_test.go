@@ -465,6 +465,166 @@ func TestDefaultFetcher_FetchUpdate_PrecisionFallback_Successor(t *testing.T) {
 	t.Logf("Successor: 22.04.2 (deleted) -> %s, major %s", updated.NewTag, updated.MajorTag)
 }
 
+// A channel tag carries fewer version components than the tags published
+// alongside it, so it used to report "Up to date" forever: 22.23-alpine was
+// invisible to 22-alpine, because the same-precision filter could never come
+// back empty and so its widening branch was dead code.
+func TestDefaultFetcher_FetchUpdate_WidensWhenPrecisionYieldsNothingNewer(t *testing.T) {
+	testFetchUpdate(t, fetchUpdateTestCase{
+		name:           "Channel tag widens to a more precise tag",
+		imageName:      "node",
+		oldTag:         "22-alpine",
+		oldDigestRef:   "node:22-alpine",
+		tags:           []string{"20-alpine", "22-alpine", "22.23-alpine", "24-alpine"},
+		expectedNewTag: "22.23-alpine",
+		expectedType:   core.UpdateTypeMinor,
+		expectedMajor:  "24-alpine",
+	})
+}
+
+// Widening is not restricted to tags the current one is a prefix of, so a
+// two-component tag still sees a newer two-component release.
+func TestDefaultFetcher_FetchUpdate_WidensPastAMinoryComponent(t *testing.T) {
+	testFetchUpdate(t, fetchUpdateTestCase{
+		name:           "Two-component tag widens past a minor bump",
+		imageName:      "example/repo",
+		oldTag:         "8.8",
+		oldDigestRef:   "example/repo:8.8",
+		tags:           []string{"8.8", "8.10.2", "8.11-slim", "9.0"},
+		expectedNewTag: "8.10.2",
+		expectedType:   core.UpdateTypeMinor,
+		expectedMajor:  "9.0",
+	})
+}
+
+// Widening must not override the preference for the current precision. The
+// preference is what stops a three-component tag from being handed a
+// four-component one that sorts higher, so the same-precision set has to win
+// whenever it holds anything newer. (Within one precision the newest same-major
+// tag wins regardless of minor magnitude, so 1.2.3 does become 1.4.0 when no
+// 1.2.4 exists -- that is the long-standing rule, pinned below.)
+func TestDefaultFetcher_FetchUpdate_KeepsPrecisionWhenItYieldsNewer(t *testing.T) {
+	testFetchUpdate(t, fetchUpdateTestCase{
+		name:           "Same precision wins when it offers something newer",
+		imageName:      "example/repo",
+		oldTag:         "1.2.3",
+		oldDigestRef:   "example/repo:1.2.3",
+		tags:           []string{"1.2.3", "1.2.4", "1.9.9.9", "2.0.0"},
+		expectedNewTag: "1.2.4",
+		expectedType:   core.UpdateTypePatch,
+		expectedMajor:  "2.0.0",
+	})
+}
+
+// Within a single precision the newest tag of the major wins, so a minor jump
+// is offered when no closer release exists. Widening does not change this; it
+// only ever adds candidates the precision filter had excluded.
+func TestDefaultFetcher_FetchUpdate_NearestPrecisionOffersMinorJump(t *testing.T) {
+	testFetchUpdate(t, fetchUpdateTestCase{
+		name:           "Nearest precision still allows a minor jump",
+		imageName:      "example/repo",
+		oldTag:         "1.2.3",
+		oldDigestRef:   "example/repo:1.2.3",
+		tags:           []string{"1.2.3", "1.4.0", "1.9.9.9", "2.0.0"},
+		expectedNewTag: "1.4.0",
+		expectedType:   core.UpdateTypeMinor,
+		expectedMajor:  "2.0.0",
+	})
+}
+
+// No same-precision tag may exist at all, which is the one case the old
+// fallback did handle. It must widen rather than claim there is nothing to do.
+func TestDefaultFetcher_FetchUpdate_WidensWhenNoSamePrecisionTagExists(t *testing.T) {
+	testFetchUpdate(t, fetchUpdateTestCase{
+		name:           "Empty same-precision set widens",
+		imageName:      "example/repo",
+		oldTag:         "1.2.3-alpine",
+		oldDigestRef:   "example/repo:1.2.3-alpine",
+		tags:           []string{"1.2-alpine", "1.3-alpine", "2.0-alpine"},
+		expectedNewTag: "1.3-alpine",
+		expectedType:   core.UpdateTypeMinor,
+		expectedMajor:  "2.0-alpine",
+	})
+}
+
+// Widening also surfaces a major release the same-precision set could not see.
+// It stays reported-only, never pre-selected, so nothing is applied silently.
+func TestDefaultFetcher_FetchUpdate_WidenSurfacesInvisibleMajor(t *testing.T) {
+	mock := &mockClient{
+		getDigestFn: func(ctx context.Context, ref string) (string, error) {
+			return "sha256:digest", nil
+		},
+		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
+			return []string{"1.2", "2.0.1"}, nil
+		},
+	}
+
+	fetcher := NewDefaultFetcher(mock)
+
+	current := core.ImageUpdate{
+		ImageName: "example/repo",
+		OldTag:    "1.2",
+	}
+
+	updated, err := fetcher.FetchUpdate(context.Background(), current)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if updated.NewTag != "1.2" {
+		t.Errorf("expected NewTag to remain 1.2, got %s", updated.NewTag)
+	}
+
+	if updated.Selected {
+		t.Error("expected Selected to be false: 1.2 is still the newest in its major")
+	}
+
+	if updated.MajorTag != "2.0.1" {
+		t.Errorf("expected MajorTag to be 2.0.1, got %s", updated.MajorTag)
+	}
+
+	t.Logf("Widening surfaced major %s without selecting it", updated.MajorTag)
+}
+
+// NoCompatibleTags means no tag shares the base suffix at all. A missing
+// same-precision tag is not a reason to claim the image has no candidates.
+func TestDefaultFetcher_FetchUpdate_WidenKeepsFlavorIsolation(t *testing.T) {
+	mock := &mockClient{
+		getDigestFn: func(ctx context.Context, ref string) (string, error) {
+			return "sha256:digest", nil
+		},
+		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
+			return []string{"1.2-alpine", "1.3-alpine", "1.9-bookworm", "2.0"}, nil
+		},
+	}
+
+	fetcher := NewDefaultFetcher(mock)
+
+	current := core.ImageUpdate{
+		ImageName: "example/repo",
+		OldTag:    "1.2-alpine",
+	}
+
+	updated, err := fetcher.FetchUpdate(context.Background(), current)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if updated.NoCompatibleTags {
+		t.Error("expected NoCompatibleTags to be false: alpine candidates do exist")
+	}
+
+	if updated.NewTag != "1.3-alpine" {
+		t.Errorf("expected NewTag to be 1.3-alpine, got %s", updated.NewTag)
+	}
+
+	if updated.MajorTag != "" {
+		t.Errorf("expected no MajorTag: 1.9-bookworm is a flavor change, got %s", updated.MajorTag)
+	}
+
+	t.Logf("Widening stayed inside the flavor: -> %s", updated.NewTag)
+}
+
 func TestDefaultFetcher_FetchUpdate_NonSemver_MissingTag(t *testing.T) {
 	mock := &mockClient{
 		getDigestFn: func(ctx context.Context, ref string) (string, error) {

@@ -161,7 +161,16 @@ The filtered list of tags is parsed and sorted in descending order by `Mastermin
 * `v1.2.3` ➡️ `v1.3.0` = **Minor** (Selected: true)
 * `v1.2.3` ➡️ `v2.0.0` = **Major** (Selected: false ⚠️)
 
-### 4. Digest Resolution
+### 4. Precision as a Preference, Not a Filter
+Candidates are first narrowed to the tags carrying the *same number of version components* as the current one, so a pinned `1.2.3` is never handed a `1.2.4.1` that happens to sort higher.
+
+That narrowing is a preference, not a filter: when the same-precision set holds **nothing newer in the current major**, the search widens to every tag sharing the base suffix and the newest tag of the major wins.
+
+This is what keeps channel tags honest. `node:22-alpine` publishes alongside `22.23.3-alpine`, and `22` sorts *below* it, so a strict precision filter leaves the channel tag permanently reporting "Up to date" — the exact bug this rule exists to prevent. The same widening is what lets `8.8` see `8.10.2`.
+
+Within a single precision the newest tag of the major wins regardless of minor magnitude: `1.2.3` does become `1.4.0` when no `1.2.4` exists. That is deliberate — the precision rule is about the *shape* of a tag, not the size of the jump. A widened update is therefore ranked by its absolute version jump, so `16-alpine -> 16.11-alpine` reads as *minor* and `--mode patch` skips it (a known gap, tracked in TODO.md).
+
+### 5. Digest Resolution
 Once the new target tag is determined, *shiphoist* specifically fetches the manifest for this tag from the registry to extract the cryptographic SHA256 digest for "immutable pinning".
 
 ---
