@@ -496,7 +496,7 @@ func TestPrintApplyResult_DryRunDoesNotClaimSuccess(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	printApplyResult(&out, report)
+	printApplyResult(&out, options{}, report)
 
 	assertContains(t, out.String(), "Would apply 1 update (dry run, nothing was written):")
 	assertContains(t, out.String(), "[db] postgres: 16.2 -> 16.3 (minor)")
@@ -515,7 +515,7 @@ func TestPrintApplyResult_ReportsPinnedDigest(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	printApplyResult(&out, report)
+	printApplyResult(&out, options{}, report)
 
 	assertContains(t, out.String(), "Successfully applied 1 update:")
 	assertContains(t, out.String(), "[web] nginx: pinned to new digest")
@@ -523,9 +523,68 @@ func TestPrintApplyResult_ReportsPinnedDigest(t *testing.T) {
 
 func TestPrintApplyResult_EmptyReport(t *testing.T) {
 	var out bytes.Buffer
-	printApplyResult(&out, &core.Report{})
+	printApplyResult(&out, options{}, &core.Report{})
 
 	assertContains(t, out.String(), "Everything is up to date")
+}
+
+// A quiet run suppresses the progress reporter's failure block, so an empty
+// result with failures has to name them itself. Claiming to be up to date would
+// contradict the non-zero exit code --yes produces for the same run.
+func TestPrintApplyResult_QuietNamesUnresolvedImages(t *testing.T) {
+	report := &core.Report{
+		Failures: []core.Failure{
+			{Image: "[web] nginx", Message: "unauthorized"},
+			{Image: "[db] postgres", Message: "failed to fetch tags"},
+		},
+	}
+
+	var out bytes.Buffer
+	printApplyResult(&out, options{Quiet: true}, report)
+
+	assertContains(t, out.String(), "2 images could not be checked")
+	assertContains(t, out.String(), "[web] nginx: unauthorized")
+	assertContains(t, out.String(), "[db] postgres: failed to fetch tags")
+
+	if strings.Contains(out.String(), "up to date") {
+		t.Errorf("a run that checked nothing must not claim to be up to date:\n%s", out.String())
+	}
+}
+
+// A non-quiet run already printed the failure block via ui.Progress.Stop, so the
+// headline states the count without repeating every line.
+func TestPrintApplyResult_NonQuietDoesNotRepeatFailures(t *testing.T) {
+	report := &core.Report{
+		Failures: []core.Failure{{Image: "nginx", Message: "unauthorized"}},
+	}
+
+	var out bytes.Buffer
+	printApplyResult(&out, options{}, report)
+
+	assertContains(t, out.String(), "1 image could not be checked")
+
+	if strings.Contains(out.String(), "nginx: unauthorized") {
+		t.Errorf("the progress reporter owns the failure list outside --quiet:\n%s", out.String())
+	}
+}
+
+// A run that applied updates can still have left images unresolved, and the
+// quiet output must say so rather than reading as a complete pass.
+func TestPrintApplyResult_QuietFlagsFailuresAlongsideUpdates(t *testing.T) {
+	report := &core.Report{
+		Written: true,
+		Updates: []core.ImageUpdate{
+			testResolved("db", "postgres", core.UpdateTypeMinor),
+		},
+		Failures: []core.Failure{{Image: "nginx", Message: "unauthorized"}},
+	}
+
+	var out bytes.Buffer
+	printApplyResult(&out, options{Quiet: true}, report)
+
+	assertContains(t, out.String(), "Successfully applied 1 update:")
+	assertContains(t, out.String(), "1 image could not be checked")
+	assertContains(t, out.String(), "nginx: unauthorized")
 }
 
 // testResolved is a resolved, selected update as the report would carry it.

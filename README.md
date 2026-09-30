@@ -172,7 +172,7 @@ run, after the summary:
 
 ### Quiet Mode
 
-`--quiet` suppresses the progress bar, the banner, the summary and the skipped-images block. The result is still printed, because that is the point of the run. Combine it with `--json` for machine-only output.
+`--quiet` suppresses the progress bar, the banner, the summary and the skipped-images block. The result is still printed, because that is the point of the run, and images the registry could not resolve are listed there with their reasons — the progress reporter's failure block is among the suppressed output, so a quiet run that applied nothing reports what went unchecked instead of claiming to be up to date. Combine it with `--json` for machine-only output.
 
 ### Exit Codes
 

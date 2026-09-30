@@ -124,17 +124,28 @@ func preferVPrefix(candidates TagList, hasVPrefix bool) TagList {
 
 // hasNewerSameMajor reports whether the candidates hold a tag of the current
 // major that is newer than the current tag and shares its CalVer schema.
+//
+// This is a yes/no question about the whole set, so it scans for the newest
+// qualifying version rather than materialising the classified list: the caller
+// classifies again after preferVPrefix, on a set this one must not influence.
 func hasNewerSameMajor(candidates TagList, oldParsed Tag, isCalVer bool) bool {
-	if len(candidates) == 0 {
-		return false
+	for i := range candidates {
+		tag := &candidates[i]
+
+		if isCalVer != (tag.SemVer.Major() >= calVerThresholdYear) {
+			continue
+		}
+
+		if tag.SemVer.Major() != oldParsed.SemVer.Major() {
+			continue
+		}
+
+		if tag.SemVer.GreaterThan(oldParsed.SemVer) {
+			return true
+		}
 	}
 
-	sameMajor, _ := classifyCandidates(candidates.SortBySemver(), oldParsed, isCalVer)
-	if len(sameMajor) == 0 {
-		return false
-	}
-
-	return sameMajor[len(sameMajor)-1].SemVer.GreaterThan(oldParsed.SemVer)
+	return false
 }
 
 // classifyCandidates splits candidates into those in the current major and the

@@ -78,7 +78,7 @@ func runUpdate(d deps, opts options, filePath string) error {
 		}
 	}
 
-	printApplyResult(human, report)
+	printApplyResult(human, opts, report)
 
 	if !opts.Quiet {
 		printFiltered(human, report)
@@ -128,9 +128,15 @@ func writeReportJSON(w io.Writer, report *core.Report) error {
 
 // printApplyResult reports what the run did. An empty result means every
 // discovered reference was already current.
-func printApplyResult(w io.Writer, report *core.Report) {
+//
+// An empty result is not the same as a clean one: images whose registry lookup
+// failed are absent from Updates, so a run where every fetch failed would
+// otherwise claim to be up to date. Under --quiet the progress reporter prints
+// no failure block, so the list is repeated here — the exit code alone is not
+// enough to explain an empty result.
+func printApplyResult(w io.Writer, opts options, report *core.Report) {
 	if len(report.Updates) == 0 {
-		fmt.Fprintln(w, "✅ Everything is up to date! No changes needed.")
+		printNoUpdates(w, opts, report)
 
 		return
 	}
@@ -146,18 +152,67 @@ func printApplyResult(w io.Writer, report *core.Report) {
 
 		fmt.Fprintf(w, "  🚀 %s: %s -> %s (%s)\n", u.Label(), u.OldTag, u.NewTag, u.UpdateType)
 	}
+
+	printUnresolved(w, opts, report)
+}
+
+// printNoUpdates states an empty result, distinguishing a run that checked
+// everything and found nothing from one that could not check everything.
+func printNoUpdates(w io.Writer, opts options, report *core.Report) {
+	if len(report.Failures) == 0 {
+		fmt.Fprintln(w, "✅ Everything is up to date! No changes needed.")
+
+		return
+	}
+
+	failures := counted(len(report.Failures), "image", "images")
+
+	fmt.Fprintf(w, "⚠️  No updates applied - %s could not be checked.\n", failures)
+
+	printFailureBullets(w, opts, report.Failures)
+}
+
+// printUnresolved names the images that were never resolved, so a run that
+// applied some updates cannot imply it covered the whole file.
+func printUnresolved(w io.Writer, opts options, report *core.Report) {
+	if len(report.Failures) == 0 {
+		return
+	}
+
+	fmt.Fprintf(w, "\n⚠️  %s could not be checked.\n", counted(len(report.Failures), "image", "images"))
+
+	printFailureBullets(w, opts, report.Failures)
+}
+
+// printFailureBullets lists each unresolved image with its reason.
+//
+// A quiet run gets the list because ui.Progress.Stop suppresses its own failure
+// block there. A non-quiet run already saw it, so repeating it would be noise.
+func printFailureBullets(w io.Writer, opts options, failures []core.Failure) {
+	if !opts.Quiet {
+		return
+	}
+
+	for _, f := range failures {
+		fmt.Fprintf(w, "   • %s: %s\n", f.Image, f.Message)
+	}
 }
 
 // applyHeadline states the outcome. A dry run must not read like a write, so it
 // is called out explicitly rather than by omission.
 func applyHeadline(report *core.Report) string {
-	count := fmt.Sprintf("%d %s", len(report.Updates), plural(len(report.Updates), "update", "updates"))
+	count := counted(len(report.Updates), "update", "updates")
 
 	if report.DryRun {
 		return fmt.Sprintf("🔍 Would apply %s (dry run, nothing was written):", count)
 	}
 
 	return fmt.Sprintf("✅ Successfully applied %s:", count)
+}
+
+// counted renders a count with the noun agreeing with it.
+func counted(n int, singular, many string) string {
+	return fmt.Sprintf("%d %s", n, plural(n, singular, many))
 }
 
 func plural(n int, singular, many string) string {

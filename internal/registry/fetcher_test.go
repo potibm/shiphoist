@@ -469,6 +469,79 @@ func TestDefaultFetcher_FetchUpdate_PrecisionFallback_Successor(t *testing.T) {
 // alongside it, so it used to report "Up to date" forever: 22.23-alpine was
 // invisible to 22-alpine, because the same-precision filter could never come
 // back empty and so its widening branch was dead code.
+// hasNewerSameMajor gates whether precision is abandoned, so it has to answer
+// for the newest qualifying tag whatever order the candidates arrive in. The
+// table keeps the input unsorted on purpose: a probe that compared only adjacent
+// entries would pass a sorted list and fail this one.
+func TestHasNewerSameMajor(t *testing.T) {
+	tests := []struct {
+		name       string
+		oldTag     string
+		candidates []string
+		want       bool
+	}{
+		{
+			name:       "newer same major is found last in an unsorted set",
+			oldTag:     "1.2.3",
+			candidates: []string{"1.2.3", "1.2.9", "1.2.4", "1.3.0"},
+			want:       true,
+		},
+		{
+			name:       "only older same-major tags",
+			oldTag:     "1.2.3",
+			candidates: []string{"1.2.3", "1.2.2", "1.1.9"},
+			want:       false,
+		},
+		{
+			name:       "newer tag in a later major does not count",
+			oldTag:     "1.2.3",
+			candidates: []string{"1.2.3", "2.0.0", "3.0.0"},
+			want:       false,
+		},
+		{
+			name:       "CalVer candidates are ignored for a semver current",
+			oldTag:     "1.2.3",
+			candidates: []string{"1.2.3", "2024.1", "2025.1"},
+			want:       false,
+		},
+		{
+			name:       "semver candidates are ignored for a CalVer current",
+			oldTag:     "2024.1.5",
+			candidates: []string{"2024.1.5", "9.9.9", "1.2.3"},
+			want:       false,
+		},
+		{
+			name:       "newer CalVer release is found for a CalVer current",
+			oldTag:     "2024.1.5",
+			candidates: []string{"2024.1.5", "2024.2.0", "9.9.9"},
+			want:       true,
+		},
+		{
+			name:       "no candidates",
+			oldTag:     "1.2.3",
+			candidates: nil,
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldParsed, err := ParseTag(tt.oldTag)
+			if err != nil {
+				t.Fatalf("ParseTag(%q) returned an error: %v", tt.oldTag, err)
+			}
+
+			candidates := NewTagListFromStrings(tt.candidates)
+
+			got := hasNewerSameMajor(candidates, oldParsed, oldParsed.SemVer.Major() >= calVerThresholdYear)
+
+			if got != tt.want {
+				t.Errorf("hasNewerSameMajor(%v) = %v, want %v", tt.candidates, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDefaultFetcher_FetchUpdate_WidensWhenPrecisionYieldsNothingNewer(t *testing.T) {
 	testFetchUpdate(t, fetchUpdateTestCase{
 		name:           "Channel tag widens to a more precise tag",
