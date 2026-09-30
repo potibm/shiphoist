@@ -485,6 +485,21 @@ func assertContains(t *testing.T, got, want string) {
 	}
 }
 
+// assertAbsent is for output that must not appear.
+//
+// It takes the sink rather than a string so a test has to name the stream it is
+// reasoning about: prose goes to stderr only under --json, so an assertion on
+// the wrong buffer passes without ever reading what the run wrote. A caller
+// asserting suppression should therefore assert a positive marker first, since
+// a run that printed nothing at all is not a clean suppression.
+func assertAbsent(t *testing.T, sink *bytes.Buffer, unwanted string) {
+	t.Helper()
+
+	if strings.Contains(sink.String(), unwanted) {
+		t.Errorf("expected %q to be suppressed, got:\n%s", unwanted, sink.String())
+	}
+}
+
 // A dry run must promise exactly what a real run would write, and say so in the
 // output rather than claiming success.
 func TestPrintApplyResult_DryRunDoesNotClaimSuccess(t *testing.T) {
@@ -653,13 +668,15 @@ func TestRunUpdate_QuietSuppressesProgressButKeepsTheResult(t *testing.T) {
 
 	// The progress chatter does not.
 	for _, unwanted := range []string{"Checked 2 images", "Hoisting sails", "🚢"} {
-		if strings.Contains(out, unwanted) {
-			t.Errorf("expected %q to be suppressed, got:\n%s", unwanted, out)
-		}
+		assertAbsent(t, h.out, unwanted)
 	}
 }
 
-func TestRunUpdate_QuietSuppressesTheSkippedBlock(t *testing.T) {
+// --quiet suppresses the progress reporter's failure block, so printApplyResult
+// has to name the unresolved images itself. The run has one success and one
+// failure, so this covers the updates-present path; the empty-result wording is
+// covered by TestPrintApplyResult_QuietNamesUnresolvedImages.
+func TestRunUpdate_QuietNamesFailuresWhenQuiet(t *testing.T) {
 	h := newHarness(t)
 	h.deps.NewFetcher = failingRepo("postgres")
 
@@ -667,9 +684,10 @@ func TestRunUpdate_QuietSuppressesTheSkippedBlock(t *testing.T) {
 		t.Fatal("expected an incomplete run to fail a --yes run")
 	}
 
-	if strings.Contains(h.errOut.String(), "Skipped 1 image") {
-		t.Errorf("expected the skipped block to be suppressed, got:\n%s", h.errOut.String())
-	}
+	assertContains(t, h.out.String(), "1 image could not be checked")
+	assertContains(t, h.out.String(), "postgres: registry unavailable")
+
+	assertAbsent(t, h.out, "Skipped 1 image")
 }
 
 // stdout must be exactly one JSON document, or the flag is useless in a pipe.
@@ -1023,9 +1041,12 @@ func TestRunUpdate_QuietSuppressesTheFilteredBlock(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if strings.Contains(h.out.String(), "Not checked") {
-		t.Errorf("expected the filtered block to be suppressed, got:\n%s", h.out.String())
-	}
+	// One reference in the fixture survives filtering, so the result is real
+	// output. Asserting that first stops the check below from passing on a run
+	// that wrote nothing at all.
+	assertContains(t, h.out.String(), "Successfully applied 1 update")
+
+	assertAbsent(t, h.out, "Not checked")
 }
 
 // The flags that only mean something for a file must not be silently accepted
