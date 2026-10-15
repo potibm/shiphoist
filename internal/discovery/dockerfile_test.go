@@ -46,6 +46,17 @@ func writeDockerfile(t *testing.T, content string) string {
 	return path
 }
 
+// stages lists the stage labels found, so a test can name what was discovered
+// without spelling out every other field.
+func stages(updates []core.ImageUpdate) []string {
+	names := make([]string, 0, len(updates))
+	for _, u := range updates {
+		names = append(names, u.ServiceName)
+	}
+
+	return names
+}
+
 func discoverDockerfile(t *testing.T, content string) ([]core.ImageUpdate, *DockerfileDiscoverer) {
 	t.Helper()
 
@@ -181,6 +192,52 @@ func TestDockerfileDiscoverer_OnlyComments(t *testing.T) {
 
 	if got := discoverer.Filtered(); len(got) != 0 {
 		t.Errorf("expected nothing filtered, got %+v", got)
+	}
+}
+
+// A commented-out FROM is not a stage. Rewriting one would alter a line that
+// never reaches the build, which reads as work while doing nothing.
+func TestDockerfileDiscoverer_CommentedOutFromIsIgnored(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{
+			name:    "leading comment",
+			content: "# FROM nginx:1.25.0\nFROM redis:7.2\n",
+			want:    []string{"stage-0"},
+		},
+		{
+			name:    "indented comment",
+			content: "  # FROM nginx:1.25.0\nFROM redis:7.2\n",
+			want:    []string{"stage-0"},
+		},
+		{
+			// The alias has to come from the real line, not from the comment.
+			name:    "comment naming a stage",
+			content: "# FROM nginx:1.25.0 AS builder\nFROM redis:7.2 AS app\n",
+			want:    []string{"app"},
+		},
+		{
+			name:    "trailing comment on a real line",
+			content: "FROM redis:7.2 # was nginx:1.25.0\n",
+			want:    []string{"stage-0"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			updates, discoverer := discoverDockerfile(t, tt.content)
+
+			if got := stages(updates); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("expected %v, got %v", tt.want, got)
+			}
+
+			if got := discoverer.Filtered(); len(got) != 0 {
+				t.Errorf("expected nothing filtered, got %+v", got)
+			}
+		})
 	}
 }
 

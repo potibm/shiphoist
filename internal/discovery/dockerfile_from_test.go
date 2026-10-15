@@ -131,6 +131,20 @@ func TestParseFrom(t *testing.T) {
 			line: "# FROM nginx:1.25.0",
 		},
 		{
+			// Comments survive indentation when a build stage is nested in a
+			// snippet, and a `#` after whitespace opens one.
+			name: "indented comment",
+			line: "  # FROM nginx:1.25.0",
+		},
+		{
+			name: "tab indented comment",
+			line: "\t# FROM nginx:1.25.0",
+		},
+		{
+			name: "comment naming a stage",
+			line: "# FROM nginx:1.25.0 AS builder",
+		},
+		{
 			name: "blank line",
 			line: "   ",
 		},
@@ -190,6 +204,11 @@ func TestFieldsWithoutComment(t *testing.T) {
 		{
 			name: "leading comment",
 			line: "# FROM nginx:1.25.0",
+			want: nil,
+		},
+		{
+			name: "indented leading comment",
+			line: "    # FROM nginx:1.25.0",
 			want: nil,
 		},
 		{

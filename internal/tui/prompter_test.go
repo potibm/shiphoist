@@ -703,6 +703,14 @@ func TestSelectCap_DefaultsToMajor(t *testing.T) {
 	}
 }
 
+// The zero value is reachable without NewHuhPrompter, and rendering through a
+// nil field would panic rather than fail in a way a caller could report.
+func TestHuhPrompter_ZeroValueHasARunner(t *testing.T) {
+	if (&HuhPrompter{}).runner() == nil {
+		t.Fatal("expected the zero value to fall back to the interactive runner")
+	}
+}
+
 func assertContains(t *testing.T, got, want string) {
 	t.Helper()
 

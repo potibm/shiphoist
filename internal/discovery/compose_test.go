@@ -409,6 +409,108 @@ func TestComposeDiscoverer_UnrelatedCommentsAreKept(t *testing.T) {
 	}
 }
 
+// A commented-out reference is not a declaration. Rewriting one would change a
+// line that has no effect on the running stack, which is worse than missing an
+// update: it looks like work while doing nothing.
+//
+// The cases differ in where the comment sits, because the parser attaches
+// comments to the nodes around them and the position decides what a reference
+// would be read from.
+func TestComposeDiscoverer_CommentedOutReferencesAreIgnored(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{
+			name: "inside a service",
+			content: `services:
+  web:
+    # image: nginx:1.25.0
+    image: redis:7.2
+`,
+			want: []string{"web"},
+		},
+		{
+			name: "a whole service",
+			content: `services:
+  web:
+    image: nginx:1.25.0
+  # off:
+  #   image: postgres:16
+`,
+			want: []string{"web"},
+		},
+		{
+			name: "at the end of the file",
+			content: `services:
+  web:
+    image: nginx:1.25.0
+    # image: redis:7.2
+`,
+			want: []string{"web"},
+		},
+		{
+			name: "indented under a key that is not image",
+			content: `services:
+  web:
+    image: nginx:1.25.0
+    deploy:
+      # image: redis:7.2
+      replicas: 2
+`,
+			want: []string{"web"},
+		},
+		{
+			// Both references are real; only the one inside the trailing
+			// comment is not.
+			name: "trailing after a real reference",
+			content: `services:
+  web:
+    image: nginx:1.25.0
+  db:
+    image: postgres:16 # image: mysql:8
+`,
+			want: []string{"web", "db"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := services(t, discover(t, tt.content))
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("expected %v, got %v", tt.want, got)
+			}
+		})
+	}
+}
+
+// A directive on a commented-out line must not report the reference as filtered:
+// the reference does not exist, so saying it was skipped would over-report the
+// run and make the skipped-images block look incomplete.
+func TestComposeDiscoverer_CommentedOutDirectiveIsNotAFilter(t *testing.T) {
+	content := `services:
+  web:
+    image: nginx:1.25.0
+    # image: redis:7.2 # shiphoist-ignore
+`
+
+	discoverer := &ComposeDiscoverer{}
+
+	updates, err := discoverer.Discover(context.Background(), writeTempFile(t, "docker-compose.yaml", content))
+	if err != nil {
+		t.Fatalf("unexpected error during Discover: %v", err)
+	}
+
+	if got := services(t, updates); !reflect.DeepEqual(got, []string{"web"}) {
+		t.Errorf("expected only web, got %v", got)
+	}
+
+	if filtered := discoverer.Filtered(); len(filtered) != 0 {
+		t.Errorf("expected nothing filtered, got %v", filtered)
+	}
+}
+
 // Filtering is per run, so reusing a discoverer cannot leak a previous run's
 // skips into the next one.
 func TestComposeDiscoverer_FilteredResetsBetweenRuns(t *testing.T) {
