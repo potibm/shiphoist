@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/charmbracelet/huh v1.0.0
-	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/go-containerregistry v0.22.1
