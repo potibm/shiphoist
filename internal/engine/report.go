@@ -5,10 +5,10 @@ import (
 	"github.com/potibm/shiphoist/internal/ui"
 )
 
-// newReport seeds a report for a run over filePath.
-func newReport(filePath string, references int) *core.Report {
+// newReport seeds a report for a run over the given files.
+func newReport(files []string, references int) *core.Report {
 	return &core.Report{
-		File:       filePath,
+		Files:      files,
 		References: references,
 	}
 }

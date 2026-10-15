@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -219,10 +220,12 @@ func TestRunUpdate_Errors(t *testing.T) {
 			wantErr:  "failed to initialize fetcher",
 		},
 		{
+			// The path never reaches discovery, so the message names the
+			// argument rather than a phase that never ran.
 			name:     "file does not exist",
 			deps:     func(*harness) {},
 			filePath: func(*harness) string { return unknownImage },
-			wantErr:  "discovery phase failed",
+			wantErr:  "no files match",
 		},
 		{
 			name: "prompter fails",
@@ -703,8 +706,8 @@ func TestRunUpdate_JSONOwnsStdoutAlone(t *testing.T) {
 		t.Fatalf("stdout is not a single JSON document: %v\n%s", err, h.out.String())
 	}
 
-	if report.File != h.compose {
-		t.Errorf("expected the report to name the file, got %q", report.File)
+	if !slices.Equal(report.Files, []string{h.compose}) {
+		t.Errorf("expected the report to name the file, got %v", report.Files)
 	}
 
 	if len(report.Updates) != 2 || !report.Written {
@@ -1190,4 +1193,168 @@ func TestRunUpdate_ComposeStillDetected(t *testing.T) {
 
 	assertContains(t, h.out.String(), "[db] postgres")
 	assertContains(t, h.out.String(), "[cache] redis")
+}
+
+// Several files are one run: both are written, and the single selection covers
+// both. Asking once per file would make a user confirm the same shared
+// reference twice.
+func TestRunUpdate_SeveralFilesAreOneRun(t *testing.T) {
+	h := newHarness(t)
+
+	second := writeCompose(t, "docker-compose.dev.yml", `services:
+  api:
+    image: redis:7.2.1
+`)
+
+	if err := runUpdate(h.deps, options{Yes: true}, h.compose, second); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, path := range []string{h.compose, second} {
+		if !strings.Contains(readFile(t, path), "@sha256:newdigest") {
+			t.Errorf("expected %s to be patched:\n%s", path, readFile(t, path))
+		}
+	}
+
+	if h.out == nil || h.out.String() == "" {
+		t.Error("expected a summary")
+	}
+}
+
+// A Dockerfile and a Compose file in the same run are read by different
+// discoverers, chosen per file. One discoverer for the whole run could serve at
+// most one of the two formats.
+func TestRunUpdate_MixedFormatsChooseADiscovererPerFile(t *testing.T) {
+	h := newHarness(t)
+
+	dockerfile := writeCompose(t, "Dockerfile", "FROM alpine:3.19\n")
+
+	if err := runUpdate(h.deps, options{Yes: true}, h.compose, dockerfile); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	patched := readFile(t, dockerfile)
+	if !strings.Contains(patched, "alpine:3.19.1@sha256:newdigest") {
+		t.Errorf("expected the Dockerfile to be patched, got:\n%s", patched)
+	}
+
+	// The Compose file in the same run was still read as Compose.
+	if !strings.Contains(readFile(t, h.compose), "@sha256:newdigest") {
+		t.Errorf("expected the Compose file to be patched:\n%s", readFile(t, h.compose))
+	}
+}
+
+// The JSON report lists every file a run covered, so a consumer can tell what
+// was checked without walking the updates.
+func TestRunUpdate_JSONListsEveryFile(t *testing.T) {
+	h := newHarness(t)
+
+	second := writeCompose(t, "docker-compose.dev.yml", `services:
+  api:
+    image: redis:7.2.1
+`)
+
+	if err := runUpdate(h.deps, options{Yes: true, JSON: true}, h.compose, second); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var report core.Report
+	if err := json.Unmarshal(h.out.Bytes(), &report); err != nil {
+		t.Fatalf("stdout is not a single JSON document: %v\n%s", err, h.out.String())
+	}
+
+	if !slices.Equal(report.Files, []string{h.compose, second}) {
+		t.Errorf("expected both files, got %v", report.Files)
+	}
+}
+
+// --file and the positional arguments are the same list, so a Makefile can add
+// a pattern without dropping what the command line passed.
+func TestRunUpdate_FileFlagAddsToThePositionalPaths(t *testing.T) {
+	h := newHarness(t)
+
+	second := writeCompose(t, "docker-compose.dev.yml", `services:
+  api:
+    image: redis:7.2.1
+`)
+
+	if err := runUpdate(h.deps, options{Yes: true, Files: []string{second}}, h.compose); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(readFile(t, second), "@sha256:newdigest") {
+		t.Errorf("expected the flagged file to be patched:\n%s", readFile(t, second))
+	}
+}
+
+// A directory is walked for the names shiphoist reads, and nothing else.
+func TestRunUpdate_DirectoryIsWalked(t *testing.T) {
+	h := newHarness(t)
+
+	root := t.TempDir()
+	infra := filepath.Join(root, "infra")
+
+	if err := os.MkdirAll(infra, 0o750); err != nil {
+		t.Fatalf("creating infra: %v", err)
+	}
+
+	nested := filepath.Join(infra, "docker-compose.yml")
+	unknown := filepath.Join(root, "deployment.yaml")
+
+	for path, content := range map[string]string{
+		nested:  composeFixture,
+		unknown: "image: nginx:1.25.0\n",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", path, err)
+		}
+	}
+
+	if err := runUpdate(h.deps, options{Yes: true}, root); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(readFile(t, nested), "@sha256:newdigest") {
+		t.Errorf("expected the nested compose file to be patched:\n%s", readFile(t, nested))
+	}
+
+	if got := readFile(t, unknown); strings.Contains(got, "@sha256:") {
+		t.Errorf("expected the unknown file to be left alone, got:\n%s", got)
+	}
+}
+
+// A path that matches nothing is refused before any registry work. A run that
+// silently covered none of the files it was asked about would leave a CI job
+// green after doing nothing.
+func TestRunUpdate_RejectsPathsThatMatchNothing(t *testing.T) {
+	h := newHarness(t)
+
+	err := runUpdate(h.deps, options{Yes: true}, filepath.Join(t.TempDir(), "missing.yml"))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+
+	if !strings.Contains(err.Error(), "no files match") {
+		t.Errorf("expected the argument to be named, got %v", err)
+	}
+}
+
+// An unreadable file is reported rather than raised, so the other files are
+// still updated. Under --yes the failure still reaches the exit code, because
+// that is what makes the mode usable as a CI gate.
+func TestRunUpdate_UnreadableFileDoesNotStopTheOthers(t *testing.T) {
+	h := newHarness(t)
+
+	broken := writeCompose(t, "broken.yml", "services: [\n")
+
+	err := runUpdate(h.deps, options{Yes: true}, broken, h.compose)
+	if !errors.Is(err, errIncompleteRun) {
+		t.Fatalf("expected errIncompleteRun, got %v", err)
+	}
+
+	if !strings.Contains(readFile(t, h.compose), "@sha256:newdigest") {
+		t.Errorf("expected the readable file to be patched:\n%s", readFile(t, h.compose))
+	}
+
+	assertContains(t, h.out.String(), "could not be checked")
 }

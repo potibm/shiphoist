@@ -39,20 +39,29 @@ func newRootCmd(d deps) *cobra.Command {
 	var opts options
 
 	rootCmd := &cobra.Command{
-		Use:   "shiphoist [path-to-compose-file-or-Dockerfile]",
+		Use:   "shiphoist [path-to-compose-file-or-Dockerfile...]",
 		Short: rootShort,
-		Long: `Interactively update and SHA256-pin the images in a Docker Compose file or a
-Dockerfile. The format is detected from the file name.
+		Long: `Interactively update and SHA256-pin the images in Docker Compose files or a
+Dockerfiles. The format is detected from the file name.
+
+Several files are processed as one run: every reference is discovered, asked
+about in a single selection, and written back to its own file.
 
 Example: shiphoist docker-compose.yml
-        shiphoist Dockerfile`,
-		Args: cobra.ExactArgs(1),
+         shiphoist Dockerfile
+         shiphoist docker-compose.yml Dockerfile
+         shiphoist '**/docker-compose.yml'
+         shiphoist infra --file 'deploy/*.Dockerfile'`,
+		// Any number of paths, including none, which searches the current
+		// directory. A wrong count is rejected by resolvePaths, with the same
+		// message whichever shape of argument was used.
+		Args: cobra.ArbitraryArgs,
 		// A failure is reported once, by main. Printing it here as well would
 		// duplicate it, and usage text would bury the actual cause.
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runUpdate(d, opts, args[0])
+			return runUpdate(d, opts, args...)
 		},
 	}
 
@@ -105,5 +114,6 @@ func registerUpdateFlags(rootCmd *cobra.Command, opts *options) {
 	flags.BoolVar(&opts.JSON, "json", false, "Write a machine-readable report to stdout, keeping progress on stderr")
 	flags.BoolVarP(&opts.Quiet, "quiet", "q", false, "Suppress the progress bar, the summary and skipped images")
 	flags.StringVar(&opts.Mode, "mode", "", "Limit updates to "+strings.Join(modeNames, ", "))
+	flags.StringArrayVar(&opts.Files, "file", nil, "Add a file, glob pattern or directory to process (repeatable)")
 	flags.StringVar(&opts.Exclude, "exclude", "", "Skip images whose repository matches this regular expression")
 }

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/potibm/shiphoist/internal/core"
 	"github.com/potibm/shiphoist/internal/discovery"
@@ -43,19 +45,30 @@ type options struct {
 	// Exclude is a regular expression matched against image repositories.
 	// Filtering happens at discovery, so it is resolved by buildDiscoverer.
 	Exclude string
+
+	// Files are the paths named by --file, combined with the positional
+	// arguments. Either way works because a shell expands a glob before
+	// shiphoist sees it, which makes `--file '**/docker-compose.yml'` the way
+	// to pass a recursive pattern a shell would not grow for you.
+	Files []string
 }
 
-// buildDiscoverer assembles the discovery chain for a file.
+// buildDiscoverer assembles the discovery chain for the run.
 //
-// The format follows from the file name, so `shiphoist Dockerfile` needs no
-// extra flag. The regex is compiled here rather than where it is used, so a bad
+// The format follows from each file name, so `shiphoist Dockerfile` needs no
+// extra flag and a run over several files in several formats works with the same
+// command. The regex is compiled once here rather than per file, so a bad
 // pattern costs no registry traffic. An empty --exclude installs no decorator at
 // all, which keeps the common path free of an extra layer.
-func buildDiscoverer(opts options, filePath string) (core.Discoverer, error) {
-	discoverer := discovery.ForFile(filePath)
+//
+// The returned set also answers what was filtered, which the engine cannot: it
+// moves on once discovery is done, and only a discoverer still knows which
+// references a directive removed.
+func buildDiscoverer(opts options) (*discovererSet, error) {
+	set := &discovererSet{}
 
 	if strings.TrimSpace(opts.Exclude) == "" {
-		return discoverer, nil
+		return set, nil
 	}
 
 	pattern, err := regexp.Compile(opts.Exclude)
@@ -63,23 +76,70 @@ func buildDiscoverer(opts options, filePath string) (core.Discoverer, error) {
 		return nil, fmt.Errorf("invalid --exclude %q: %w", opts.Exclude, err)
 	}
 
-	return &discovery.ExcludeDiscoverer{Inner: discoverer, Pattern: pattern}, nil
-}
-
-// filteredFrom returns the references a discoverer removed, or nil for one that
-// does not filter.
-//
-// The discoverer is the only place that can honour an inline directive, since
-// the comment is gone once the file has been reduced to tokens. The CLI
-// assembled the chain, so it is the CLI that completes the report with it; the
-// engine stays unaware of filtering.
-func filteredFrom(discoverer core.Discoverer) []core.Filtered {
-	filtered, ok := discoverer.(core.FilteredDiscoverer)
-	if !ok {
-		return nil
+	set.decorate = func(filePath string) core.Discoverer {
+		return &discovery.ExcludeDiscoverer{Inner: discovery.ForFile(filePath), Pattern: pattern}
 	}
 
-	return filtered.Filtered()
+	return set, nil
+}
+
+// discovererSet builds the discoverer for one file and remembers what each of
+// them removed.
+//
+// The engine asks for a discoverer per file, so the set hands out a fresh one
+// each time and keeps it. Reading Filtered afterwards therefore reports what
+// the run actually skipped, rather than what a second, unused discoverer would
+// have skipped.
+type discovererSet struct {
+	// decorate wraps the plain discoverer for a file. When nil, no filter is
+	// installed and discovery.ForFile is used as is.
+	decorate func(filePath string) core.Discoverer
+
+	mu      sync.Mutex
+	created []core.FilteredDiscoverer
+}
+
+// Filtered returns every reference any discoverer in the run removed, ordered
+// by file and then by line, so a multi-file report reads in the order the files
+// were processed.
+func (s *discovererSet) Filtered() []core.Filtered {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var filtered []core.Filtered
+
+	for _, discoverer := range s.created {
+		filtered = append(filtered, discoverer.Filtered()...)
+	}
+
+	slices.SortStableFunc(filtered, func(a, b core.Filtered) int {
+		if a.FilePath != b.FilePath {
+			return strings.Compare(a.FilePath, b.FilePath)
+		}
+
+		return a.LineNumber - b.LineNumber
+	})
+
+	return filtered
+}
+
+// discovererFor returns the discoverer for filePath.
+func (s *discovererSet) discovererFor(filePath string) core.Discoverer {
+	var discoverer core.Discoverer
+
+	if s.decorate != nil {
+		discoverer = s.decorate(filePath)
+	} else {
+		discoverer = discovery.ForFile(filePath)
+	}
+
+	if filtered, ok := discoverer.(core.FilteredDiscoverer); ok {
+		s.mu.Lock()
+		s.created = append(s.created, filtered)
+		s.mu.Unlock()
+	}
+
+	return discoverer
 }
 
 // modeNames are the accepted --mode values, used for both the help text and the

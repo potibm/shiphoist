@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,10 +19,17 @@ const imageProcessingTimeout = 60
 // Pipeline orchestrates the entire update lifecycle.
 // It ties together discovery, remote fetching, and local patching.
 type Pipeline struct {
-	Discoverer core.Discoverer
-	Fetcher    core.RegistryFetcher
-	Patcher    core.Patcher
-	Prompter   core.Prompter
+	// DiscovererFor returns the discoverer for one file.
+	//
+	// It is a factory rather than a single discoverer because a run can cover
+	// several files in several formats: a Compose file and a Dockerfile in the
+	// same invocation are read by different discoverers, and the format follows
+	// from the file name. A single instance could serve at most one format.
+	DiscovererFor func(filePath string) core.Discoverer
+
+	Fetcher  core.RegistryFetcher
+	Patcher  core.Patcher
+	Prompter core.Prompter
 
 	// Out receives progress and summary output. Defaults to os.Stdout.
 	Out io.Writer
@@ -39,30 +47,41 @@ type Pipeline struct {
 	Quiet bool
 }
 
-// ProcessFile runs the discovered images through the update pipeline and
-// returns a report of what happened.
+// ProcessFile runs the pipeline over a single file. It is ProcessFiles with
+// one path, kept because a run over one file is the common case.
+func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) (*core.Report, error) {
+	return p.ProcessFiles(ctx, []string{filePath})
+}
+
+// ProcessFiles runs every file's discovered images through the update pipeline
+// and returns a single report of what happened.
 //
-// References that resolve to the same registry answer are fetched once and the
-// outcome shared, so a Compose file reusing one image across many services
-// costs a single round-trip.
+// The phases span the whole run rather than repeating per file, which is what
+// makes a multi-file run behave like one run: references are deduplicated
+// across files, the user is asked once, and each file is patched only with its
+// own updates.
+//
+// A failure to read one file is reported in the report and does not stop the
+// others, matching how a single unreachable registry is handled: a stack with
+// one stale file should still get its other files updated.
 //
 // A report is returned whenever the run itself succeeded, including when
 // individual images failed: those are listed in Report.Failures. An error means
 // the run could not be completed, and no report is returned.
-func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) (*core.Report, error) {
-	updates, err := p.Discoverer.Discover(ctx, filePath)
+func (p *Pipeline) ProcessFiles(ctx context.Context, paths []string) (*core.Report, error) {
+	report, updates, err := p.discoverAll(ctx, paths)
 	if err != nil {
-		return nil, fmt.Errorf("discovery phase failed for %s: %w", filePath, err)
+		return nil, err
 	}
-
-	report := newReport(filePath, len(updates))
-	report.DryRun = p.DryRun
 
 	if len(updates) == 0 {
 		return report, nil
 	}
 
+	report.DryRun = p.DryRun
+
 	started := time.Now()
+
 	groups := groupUpdates(updates)
 	progress := p.newProgress(len(groups))
 
@@ -76,7 +95,9 @@ func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) (*core.Repo
 
 	report.Checked = len(groups)
 	report.ElapsedMS = elapsed.Milliseconds()
-	report.Failures = coreFailures(failures)
+	// Appended rather than assigned: discovery already recorded the files it
+	// could not read, and overwriting them would drop them from the report.
+	report.Failures = append(report.Failures, coreFailures(failures)...)
 
 	if len(fetched) == 0 {
 		return report, nil
@@ -94,21 +115,90 @@ func (p *Pipeline) ProcessFile(ctx context.Context, filePath string) (*core.Repo
 		return report, nil
 	}
 
-	// A dry run reports the selection but never touches the file.
+	// A dry run reports the selection but never touches the files.
 	if p.DryRun {
 		report.Updates = selectedUpdates
 
 		return report, nil
 	}
 
-	if err := p.Patcher.Patch(ctx, filePath, selectedUpdates); err != nil {
-		return nil, fmt.Errorf("failed to patch file %s: %w", filePath, err)
+	if err := p.patchByFile(ctx, selectedUpdates); err != nil {
+		return nil, err
 	}
 
 	report.Updates = selectedUpdates
 	report.Written = true
 
 	return report, nil
+}
+
+// discoverAll reads every file and returns the references across all of them,
+// in the order the paths were given.
+//
+// A file that cannot be read becomes a failure rather than an error, so one
+// bad path does not cost the run the files that were readable.
+func (p *Pipeline) discoverAll(ctx context.Context, paths []string) (*core.Report, []core.ImageUpdate, error) {
+	report := newReport(paths, 0)
+
+	var updates []core.ImageUpdate
+
+	for _, path := range paths {
+		found, err := p.discoverFile(ctx, path)
+		if err != nil {
+			report.Failures = append(report.Failures, core.Failure{Image: path, Message: err.Error()})
+
+			continue
+		}
+
+		updates = append(updates, found...)
+		report.References += len(found)
+	}
+
+	return report, updates, nil
+}
+
+// discoverFile resolves one file, recording a read failure as a report failure
+// rather than an error. The report already names the file, so the path is the
+// label the failure is filed under.
+func (p *Pipeline) discoverFile(ctx context.Context, filePath string) ([]core.ImageUpdate, error) {
+	if p.DiscovererFor == nil {
+		return nil, errors.New("no discoverer configured")
+	}
+
+	updates, err := p.DiscovererFor(filePath).Discover(ctx, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("discovery phase failed for %s: %w", filePath, err)
+	}
+
+	return updates, nil
+}
+
+// patchByFile writes each file with only its own updates.
+//
+// The patcher addresses lines by number within one file, so handing it the
+// updates of the whole run would have it look up file A's line numbers in file
+// B. Grouping first also means a file with nothing selected is never opened for
+// writing, so an unchanged file keeps its mtime and permissions.
+func (p *Pipeline) patchByFile(ctx context.Context, updates []core.ImageUpdate) error {
+	for filePath, fileUpdates := range groupByFile(updates) {
+		if err := p.Patcher.Patch(ctx, filePath, fileUpdates); err != nil {
+			return fmt.Errorf("failed to patch file %s: %w", filePath, err)
+		}
+	}
+
+	return nil
+}
+
+// groupByFile buckets updates by the file they belong to, keeping the order
+// they arrived in within each bucket.
+func groupByFile(updates []core.ImageUpdate) map[string][]core.ImageUpdate {
+	byFile := make(map[string][]core.ImageUpdate, 1)
+
+	for _, update := range updates {
+		byFile[update.FilePath] = append(byFile[update.FilePath], update)
+	}
+
+	return byFile
 }
 
 // output returns the configured output sink, defaulting to stdout.

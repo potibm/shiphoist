@@ -2,14 +2,15 @@ package core
 
 import "encoding/json"
 
-// Report is the outcome of one run over one file.
+// Report is the outcome of one run over one or more files.
 //
 // It exists so a caller can describe a run without parsing human-facing output:
 // the CLI renders it, a future --json mode serialises it verbatim, and a CI job
 // can branch on Written or exit non-zero on Failures.
 type Report struct {
-	// File is the file that was processed.
-	File string `json:"file"`
+	// Files are the files that were processed, in the order they were
+	// resolved from the command line.
+	Files []string `json:"files"`
 
 	// Updates are the changes that were applied, in declaration order.
 	Updates []ImageUpdate `json:"updates"`
@@ -54,9 +55,13 @@ type Failure struct {
 // Filtered records one reference removed before the registry was consulted,
 // either by an inline directive in the file or by a command-line filter.
 //
-// The line number is carried so the list can be ordered as it appears in the
-// file, and so a report can point at what to edit.
+// The file path and line number are carried so a multi-file run can say where
+// each skip is, and so a report can point at what to edit.
 type Filtered struct {
+	// FilePath is where the reference is declared. Two files can both pin an
+	// image at line 12, so the path is what tells them apart.
+	FilePath string `json:"file_path"`
+
 	// Image is the repository that was skipped.
 	Image string `json:"image"`
 
@@ -79,6 +84,10 @@ type reportAlias Report
 // constructor means the guarantee travels with the type.
 func (r Report) MarshalJSON() ([]byte, error) {
 	normalised := reportAlias(r)
+
+	if normalised.Files == nil {
+		normalised.Files = []string{}
+	}
 
 	if normalised.Updates == nil {
 		normalised.Updates = []ImageUpdate{}
