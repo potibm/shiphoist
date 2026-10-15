@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0](https://github.com/potibm/shiphoist/compare/v0.1.4...v0.2.0) (2026-10-15)
+
+
+### Features
+
+* add non-interactive automation, Dockerfile support and ignore filtering ([#22](https://github.com/potibm/shiphoist/issues/22)) ([f4ed469](https://github.com/potibm/shiphoist/commit/f4ed4695a23e76696eb39144376d75c4d56d6f64))
+* **ui:** add progress bar, tabular TUI and fetch deduplication ([#15](https://github.com/potibm/shiphoist/issues/15)) ([7eb9845](https://github.com/potibm/shiphoist/commit/7eb984571ae9c7620dc0772da8b7e6ccb7f99c9b))
+
+
+### Bug Fixes
+
+* report registry failures instead of an update that was never applied ([#23](https://github.com/potibm/shiphoist/issues/23)) ([90cedb3](https://github.com/potibm/shiphoist/commit/90cedb3afc653ba2e7a15467edf851fe6d3d9560))
+
 ## [0.1.4](https://github.com/potibm/shiphoist/compare/v0.1.3...v0.1.4) (2026-09-23)
 
 
