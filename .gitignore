@@ -6,3 +6,5 @@ docker-compose.yml
 test/*.log
 test/docker-compose.yml*
 oss-licenses/
+# Local agent plan files
+.opencode/
