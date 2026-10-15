@@ -13,6 +13,7 @@ An interactive CLI tool to surgically update Docker image tags in Compose files,
 - **CI Ready:** `--yes`, `--dry-run`, `--mode`, `--quiet` and a `--json` report on stdout make shiphoist usable as a non-interactive gate.
 - **Single Image Inspector:** Check registry update candidates for any container image without touching a file.
 - **Dockerfile Support:** Update base images in Compose files *and* Dockerfiles, with the format detected from the file name. Multi-stage builds, `AS` aliases and `--platform` flags are handled.
+- **Several Files at Once:** Pass as many paths as you like, or a directory, or a `**` glob. All of them are one run: a shared reference is one registry lookup and one selection, and each file is written on its own.
 - **Caching:** Registry queries are cached locally for 15 minutes to keep repeated runs fast.
 
 ## Installation
@@ -70,6 +71,31 @@ Two kinds of `FROM` are deliberately left alone and reported rather than changed
 - **`FROM scratch`** — the empty base image, which has no tags or digest to update.
 
 `# shiphoist-ignore` and `--exclude` work on Dockerfiles too.
+
+### Several Files at Once
+
+Any number of paths can be given, and they are processed as **one run**: every reference is discovered, asked about in a single selection, and written back to its own file.
+
+```bash
+# Literal paths, mixing formats freely
+shiphoist docker-compose.yml Dockerfile
+
+# A directory: walked recursively for Compose files and Dockerfiles
+shiphoist infra
+
+# Glob patterns, including ** for any depth
+shiphoist '**/docker-compose.yml'
+shiphoist 'deploy/*.Dockerfile'
+
+# --file is repeatable, and is added to the positional paths
+shiphoist --file '**/docker-compose.yml' --file infra/Dockerfile
+```
+
+Quote a `**` pattern: a shell expands an unquoted glob before shiphoist sees it, so an unquoted `**/docker-compose.yml` only matches as deep as your shell's own recursion goes. `--file` is there for the cases where you want shiphoist to do the matching, for example from a Makefile.
+
+A reference shared by two files is **one** registry lookup, not two, and the one selection covers both. A file that yields nothing is never written, so an unchanged file keeps its mtime and permissions. A file that cannot be read at all is reported and skipped, and the rest of the run continues.
+
+With no arguments at all, shiphoist looks for `docker-compose.yml`, `docker-compose.yaml`, `compose.yml` or `compose.yaml` in the current directory — and only there, so a bare invocation does the obvious thing rather than silently walking the tree. If it finds nothing it fails rather than exiting clean, so a CI job cannot go green after doing no work.
 
 ### Check a Single Image
 
@@ -132,7 +158,9 @@ shiphoist --dry-run docker-compose.yml
 shiphoist --yes --json docker-compose.yml | jq -r '.updates[] | "\(.service_name) \(.old_tag) -> \(.new_tag)"'
 ```
 
-`written` and `dry_run` tell you whether the file was touched; `failures` lists every image that could not be checked; `checked` versus `references` exposes how much deduplication happened.
+`written` and `dry_run` tell you whether any file was touched; `files` lists every file the run covered, in command-line order; `failures` lists every image that could not be checked, and also names a file that could not be read at all; `checked` versus `references` exposes how much deduplication happened.
+
+Each entry under `filtered` carries a `file_path`, so a skip can be traced back to the file it came from.
 
 ### Skipping Images
 
@@ -162,7 +190,7 @@ shiphoist --exclude '^(nginx|redis)$' --yes docker-compose.yml
 ```
 
 Both can be combined. Skipped references appear in the report and, for a human
-run, after the summary:
+run, after the summary, each naming the file it came from:
 
 ```
 🚫 Not checked (2):
