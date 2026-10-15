@@ -116,11 +116,25 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 		),
 	)
 
-	if err := h.run(form); err != nil {
+	if err := h.runner()(form); err != nil {
 		return nil, err
 	}
 
 	return h.resolveGroups(groups, selectedKeys)
+}
+
+// runner returns the form renderer, falling back to the real terminal when the
+// struct was built without the constructor.
+//
+// Any exported struct can be built as its zero value, and calling through a nil
+// field would be a panic rather than an error a caller could report. Rendering
+// against the terminal is what the type is for, so that is the sensible default.
+func (h *HuhPrompter) runner() formRunner {
+	if h.run == nil {
+		return runInteractive
+	}
+
+	return h.run
 }
 
 // selectCap is the highest severity that may be preselected. An unset cap falls
