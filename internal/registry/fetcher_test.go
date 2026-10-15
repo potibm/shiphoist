@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
@@ -123,7 +124,13 @@ func TestDefaultFetcher_ListTags(t *testing.T) {
 func TestDefaultFetcher_FetchUpdate_MissingTag(t *testing.T) {
 	mock := &mockClient{
 		getDigestFn: func(ctx context.Context, ref string) (string, error) {
-			return "", &transport.Error{StatusCode: http.StatusNotFound}
+			// The current tag is gone from the registry. Every other
+			// reference, the successor included, resolves normally.
+			if ref == "example/repo:0.9.0" {
+				return "", &transport.Error{StatusCode: http.StatusNotFound}
+			}
+
+			return "sha256:new", nil
 		},
 		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
 			return []string{"0.9.5", "1.0.0", "1.1.0", "1.2.0"}, nil
@@ -463,6 +470,134 @@ func TestDefaultFetcher_FetchUpdate_PrecisionFallback_Successor(t *testing.T) {
 	}
 
 	t.Logf("Successor: 22.04.2 (deleted) -> %s, major %s", updated.NewTag, updated.MajorTag)
+}
+
+// A reference the registry will not resolve a digest for cannot be pinned, so
+// it has to be reported as a failure.
+//
+// Swallowing the error instead left the update in the report with the old digest
+// still in NewDigest, which the patcher skips without a word. The run then
+// claimed to have written an update that was never applied.
+func TestDefaultFetcher_FetchUpdate_DigestFailureIsReported(t *testing.T) {
+	mock := &mockClient{
+		getDigestFn: func(ctx context.Context, ref string) (string, error) {
+			if ref == "alpine:3.17.3" {
+				return "", &transport.Error{StatusCode: http.StatusServiceUnavailable}
+			}
+
+			return "sha256:current", nil
+		},
+		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
+			return []string{"3.16.3", "3.17.0", "3.17.3"}, nil
+		},
+	}
+
+	fetcher := NewDefaultFetcher(mock)
+
+	current := core.ImageUpdate{ImageName: "alpine", OldTag: "3.17.0"}
+
+	if _, err := fetcher.FetchUpdate(context.Background(), current); err == nil {
+		t.Fatal("expected the digest failure to be reported, got nil")
+	} else if !strings.Contains(err.Error(), "alpine:3.17.3") {
+		t.Errorf("expected the reference to be named in the error, got: %v", err)
+	}
+}
+
+// The successor path resolves a digest for the same reason, so it reports the
+// failure the same way.
+func TestDefaultFetcher_FetchUpdate_SuccessorDigestFailureIsReported(t *testing.T) {
+	mock := &mockClient{
+		getDigestFn: func(ctx context.Context, ref string) (string, error) {
+			if ref == "ubuntu:22.04" {
+				return "", &transport.Error{StatusCode: http.StatusServiceUnavailable}
+			}
+
+			if ref == "ubuntu:22.04.2" {
+				return "", &transport.Error{StatusCode: http.StatusNotFound}
+			}
+
+			return "sha256:new", nil
+		},
+		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
+			return []string{"22.04", "24.04", "26.10"}, nil
+		},
+	}
+
+	fetcher := NewDefaultFetcher(mock)
+
+	current := core.ImageUpdate{ImageName: "ubuntu", OldTag: "22.04.2"}
+
+	if _, err := fetcher.FetchUpdate(context.Background(), current); err == nil {
+		t.Fatal("expected the digest failure to be reported, got nil")
+	} else if !strings.Contains(err.Error(), "ubuntu:22.04") {
+		t.Errorf("expected the successor to be named in the error, got: %v", err)
+	}
+}
+
+// An unreachable registry must not read as "up to date". The tag listing runs
+// whenever the current tag has a SemVer shape, and a failure there used to
+// surface only as a missing NoCompatibleTags flag.
+func TestDefaultFetcher_FetchUpdate_TagListingFailureIsReported(t *testing.T) {
+	mock := &mockClient{
+		getDigestFn: func(ctx context.Context, ref string) (string, error) {
+			return "sha256:current", nil
+		},
+		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
+			return nil, fmt.Errorf("registry unreachable")
+		},
+	}
+
+	fetcher := NewDefaultFetcher(mock)
+
+	current := core.ImageUpdate{ImageName: "alpine", OldTag: "3.17.0"}
+
+	if _, err := fetcher.FetchUpdate(context.Background(), current); err == nil {
+		t.Fatal("expected the tag listing failure to be reported, got nil")
+	} else if !strings.Contains(err.Error(), "alpine") {
+		t.Errorf("expected the repository to be named in the error, got: %v", err)
+	}
+}
+
+// The same for a tag with no SemVer shape, where the listing is only attempted
+// because the current tag is gone and the outcome depends on it.
+func TestDefaultFetcher_FetchUpdate_NonSemverTagListingFailureIsReported(t *testing.T) {
+	mock := &mockClient{
+		getDigestFn: func(ctx context.Context, ref string) (string, error) {
+			return "", &transport.Error{StatusCode: http.StatusNotFound}
+		},
+		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
+			return nil, fmt.Errorf("registry unreachable")
+		},
+	}
+
+	fetcher := NewDefaultFetcher(mock)
+
+	current := core.ImageUpdate{ImageName: "nginx", OldTag: "latest"}
+
+	if _, err := fetcher.FetchUpdate(context.Background(), current); err == nil {
+		t.Fatal("expected the tag listing failure to be reported, got nil")
+	} else if !strings.Contains(err.Error(), "nginx") {
+		t.Errorf("expected the repository to be named in the error, got: %v", err)
+	}
+}
+
+func TestDefaultFetcher_ListTags_FailureIsWrapped(t *testing.T) {
+	mock := &mockClient{
+		getDigestFn: func(ctx context.Context, ref string) (string, error) {
+			return "sha256:unused", nil
+		},
+		listTagsFn: func(ctx context.Context, repo string) ([]string, error) {
+			return nil, fmt.Errorf("boom")
+		},
+	}
+
+	fetcher := NewDefaultFetcher(mock)
+
+	if _, err := fetcher.listTags(context.Background(), "alpine"); err == nil {
+		t.Fatal("expected the listing failure to be wrapped, got nil")
+	} else if !strings.Contains(err.Error(), "failed to fetch tags for alpine") {
+		t.Errorf("expected the wrapper to name the repository, got: %v", err)
+	}
 }
 
 // A channel tag carries fewer version components than the tags published

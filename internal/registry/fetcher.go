@@ -48,12 +48,10 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 		return f.handleNonSemverTag(ctx, current)
 	}
 
-	rawTags, err := f.client.ListTags(ctx, current.ImageName)
+	allTags, err := f.listTags(ctx, current.ImageName)
 	if err != nil {
-		return current, fmt.Errorf("failed to fetch tags: %w", err)
+		return current, err
 	}
-
-	allTags := NewTagListFromStrings(rawTags)
 
 	// Filter by BaseSuffix (allows different build/revision IDs)
 	baseCandidates := allTags.FilterByBaseSuffix(oldParsed.BaseSuffix)
@@ -72,14 +70,11 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 
 	sameMajor, majorBump := classifyCandidates(candidates, oldParsed, isCalVer)
 
-	if len(sameMajor) > 0 {
-		f.processSameMajorUpdate(ctx, &current, sameMajor, oldParsed)
-	}
-
-	// Successor rule: when tag is missing and no greater same-major candidate,
-	// look for a coarser-precision tag that's a version prefix of the current tag
-	if current.OldTagMissing && !current.Selected {
-		f.applySuccessorRule(ctx, &current, baseCandidates, oldParsed, isCalVer)
+	// Both rules can fail for the same reason: a reference the registry will
+	// not resolve a digest for cannot be pinned, so it has to be reported as a
+	// failure rather than as an update that was applied.
+	if err := f.applyUpdateRules(ctx, &current, sameMajor, baseCandidates, oldParsed, isCalVer); err != nil {
+		return current, err
 	}
 
 	if majorBump != nil {
@@ -87,6 +82,33 @@ func (f *DefaultFetcher) FetchUpdate(ctx context.Context, current core.ImageUpda
 	}
 
 	return current, nil
+}
+
+// applyUpdateRules runs the two rules that turn a candidate into an update.
+//
+// Each reports an error instead of leaving an unpinnable update behind, so the
+// caller only has to propagate it: the alternative is an update sitting in the
+// report with no digest, which the patcher skips without a word.
+func (f *DefaultFetcher) applyUpdateRules(
+	ctx context.Context,
+	current *core.ImageUpdate,
+	sameMajor, baseCandidates TagList,
+	oldParsed Tag,
+	isCalVer bool,
+) error {
+	if len(sameMajor) > 0 {
+		if err := f.processSameMajorUpdate(ctx, current, sameMajor, oldParsed); err != nil {
+			return err
+		}
+	}
+
+	// Successor rule: when tag is missing and no greater same-major candidate,
+	// look for a coarser-precision tag that's a version prefix of the current tag
+	if current.OldTagMissing && !current.Selected {
+		return f.applySuccessorRule(ctx, current, baseCandidates, oldParsed, isCalVer)
+	}
+
+	return nil
 }
 
 // selectCandidates narrows the available tags to the ones eligible for
@@ -178,20 +200,28 @@ func classifyCandidates(candidates TagList, oldParsed Tag, isCalVer bool) (TagLi
 func (f *DefaultFetcher) listTags(ctx context.Context, imageName string) (TagList, error) {
 	rawTags, err := f.client.ListTags(ctx, imageName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list tags for repository %s: %w", imageName, err)
+		return nil, fmt.Errorf("failed to fetch tags for %s: %w", imageName, err)
 	}
 
 	return NewTagListFromStrings(rawTags), nil
 }
 
+// handleNonSemverTag resolves an image whose current tag has no SemVer shape.
+//
+// The tag listing is only attempted when the current tag is gone from the
+// registry, because that is the only case where the listing can change the
+// outcome. A failing listing is reported rather than dropped: the caller
+// otherwise has no way to tell "no compatible tags" from "the registry was
+// unreachable", and an unreachable registry would read as up to date.
 func (f *DefaultFetcher) handleNonSemverTag(ctx context.Context, current core.ImageUpdate) (core.ImageUpdate, error) {
 	if current.OldTagMissing {
-		rawTags, listErr := f.client.ListTags(ctx, current.ImageName)
-		if listErr == nil {
-			allTags := NewTagListFromStrings(rawTags)
-			if len(allTags) == 0 {
-				current.NoCompatibleTags = true
-			}
+		allTags, err := f.listTags(ctx, current.ImageName)
+		if err != nil {
+			return current, err
+		}
+
+		if len(allTags) == 0 {
+			current.NoCompatibleTags = true
 		}
 	}
 
@@ -203,15 +233,21 @@ func (f *DefaultFetcher) handleNonSemverTag(ctx context.Context, current core.Im
 	return current, nil
 }
 
+// processSameMajorUpdate picks the newest candidate inside the current major.
+//
+// It returns an error when the digest cannot be resolved: the update is then
+// reported as a failure instead of as ready to apply. Without a digest there is
+// nothing to pin, and the patcher would skip the reference while the run
+// claimed a write.
 func (f *DefaultFetcher) processSameMajorUpdate(
 	ctx context.Context,
 	current *core.ImageUpdate,
 	sameMajor TagList,
 	oldParsed Tag,
-) {
+) error {
 	safeNewest := sameMajor[len(sameMajor)-1]
 	if !safeNewest.SemVer.GreaterThan(oldParsed.SemVer) {
-		return
+		return nil
 	}
 
 	current.NewTag = safeNewest.Raw
@@ -223,19 +259,29 @@ func (f *DefaultFetcher) processSameMajorUpdate(
 		current.UpdateType = core.UpdateTypePatch
 	}
 
-	newRefString := fmt.Sprintf("%s:%s", current.ImageName, current.NewTag)
-	if newDigest, err := f.client.GetDigest(ctx, newRefString); err == nil {
-		current.NewDigest = newDigest
+	newDigest, err := f.resolveNewDigest(ctx, current)
+	if err != nil {
+		return err
 	}
+
+	current.NewDigest = newDigest
+
+	return nil
 }
 
+// applySuccessorRule looks for a coarser-precision tag that the current tag is
+// a refinement of, for a reference whose exact tag is gone from the registry.
+//
+// It returns an error when the digest of the successor cannot be resolved, for
+// the same reason as processSameMajorUpdate: an unpinnable update must not be
+// reported as applied.
 func (f *DefaultFetcher) applySuccessorRule(
 	ctx context.Context,
 	current *core.ImageUpdate,
 	baseCandidates TagList,
 	oldParsed Tag,
 	isCalVer bool,
-) {
+) error {
 	successorCandidates := baseCandidates.FilterByVPrefix(oldParsed.HasVPrefix).SortBySemver()
 
 	var successorSameMajor TagList
@@ -254,7 +300,7 @@ func (f *DefaultFetcher) applySuccessorRule(
 	}
 
 	if len(successorSameMajor) == 0 {
-		return
+		return nil
 	}
 
 	for i := len(successorSameMajor) - 1; i >= 0; i-- {
@@ -267,11 +313,27 @@ func (f *DefaultFetcher) applySuccessorRule(
 		current.Selected = true
 		current.UpdateType = core.UpdateTypePatch
 
-		newRefString := fmt.Sprintf("%s:%s", current.ImageName, current.NewTag)
-		if newDigest, err := f.client.GetDigest(ctx, newRefString); err == nil {
-			current.NewDigest = newDigest
+		newDigest, err := f.resolveNewDigest(ctx, current)
+		if err != nil {
+			return err
 		}
 
-		break
+		current.NewDigest = newDigest
+
+		return nil
 	}
+
+	return nil
+}
+
+// resolveNewDigest fetches the digest of the reference the update points at.
+func (f *DefaultFetcher) resolveNewDigest(ctx context.Context, current *core.ImageUpdate) (string, error) {
+	refString := fmt.Sprintf("%s:%s", current.ImageName, current.NewTag)
+
+	newDigest, err := f.client.GetDigest(ctx, refString)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve digest for %s: %w", refString, err)
+	}
+
+	return newDigest, nil
 }
