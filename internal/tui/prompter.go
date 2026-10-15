@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -13,12 +14,6 @@ import (
 )
 
 const (
-	scoreMajor = 4
-	scoreMinor = 3
-	scorePatch = 2
-	scoreNone  = 1
-	scoreOther = 0
-
 	// huhChrome is the width huh spends on its own cursor, checkbox and
 	// padding. Rows are shortened by this much so the surrounding renderer
 	// never has to wrap them.
@@ -41,16 +36,56 @@ type updateGroup struct {
 	Head core.ImageUpdate
 }
 
-// safeToApply reports whether a group is pre-selected. Major updates are never
-// pre-selected, matching the safety rule for ungrouped rows.
-func (g updateGroup) safeToApply() bool {
-	return g.Head.UpdateType != core.UpdateTypeMajor
+// safeToApply reports whether a group is pre-selected under the given cap.
+//
+// A major update is never pre-selected, whatever the cap says. The cap is a
+// ceiling a user asked for, so it can only tighten the automatic selection; it
+// must never be able to reopen the major-update safety floor.
+func (g updateGroup) safeToApply(maxUpdate core.UpdateType) bool {
+	severity := core.Severity(g.Head.UpdateType)
+
+	return severity < core.Severity(core.UpdateTypeMajor) &&
+		severity <= core.Severity(maxUpdate)
 }
 
-type HuhPrompter struct{}
+// formRunner renders a built form and returns once it is confirmed or aborted.
+type formRunner func(form *huh.Form) error
 
-func NewHuhPrompter() *HuhPrompter {
-	return &HuhPrompter{}
+// runInteractive renders the form against the real terminal.
+func runInteractive(form *huh.Form) error {
+	return form.Run()
+}
+
+// runFrom renders the form in accessible mode, drawing to out and reading keys
+// from in.
+//
+// Accessible mode is the only way to drive a huh form without a terminal: it
+// prints a numbered list and reads line input instead of raw keystrokes. A
+// blank line confirms whatever is currently selected, which is what lets a test
+// assert on the defaults shiphoist preselects.
+func runFrom(in io.Reader, out io.Writer) formRunner {
+	return func(form *huh.Form) error {
+		form.WithAccessible(true).WithInput(in).WithOutput(out)
+
+		return form.Run()
+	}
+}
+
+type HuhPrompter struct {
+	// run renders each form. Defaults to runInteractive.
+	run formRunner
+
+	// width is the column budget for the table. Zero means detect it.
+	width int
+
+	// maxUpdate caps the magnitude that may be pre-selected. The zero value
+	// means no cap beyond the built-in rule that a major is never preselected.
+	maxUpdate core.UpdateType
+}
+
+// NewHuhPrompter returns a prompter that caps pre-selection at maxUpdate.
+func NewHuhPrompter(maxUpdate core.UpdateType) *HuhPrompter {
+	return &HuhPrompter{run: runInteractive, maxUpdate: maxUpdate}
 }
 
 func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpdate, error) {
@@ -59,7 +94,8 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 	}
 
 	groups := sortGroupsByRelevance(groupUpdates(updates))
-	rows := rowsFor(groups)
+	rows := rowsFor(groups, h.tableWidth())
+	ceiling := h.selectCap()
 
 	var (
 		selectedKeys []string
@@ -67,7 +103,7 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 	)
 
 	for i, group := range groups {
-		options = append(options, huh.NewOption(rows[i], group.Key).Selected(group.safeToApply()))
+		options = append(options, huh.NewOption(rows[i], group.Key).Selected(group.safeToApply(ceiling)))
 	}
 
 	form := huh.NewForm(
@@ -80,11 +116,32 @@ func (h *HuhPrompter) SelectUpdates(updates []core.ImageUpdate) ([]core.ImageUpd
 		),
 	)
 
-	if err := form.Run(); err != nil {
+	if err := h.run(form); err != nil {
 		return nil, err
 	}
 
 	return h.resolveGroups(groups, selectedKeys)
+}
+
+// selectCap is the highest severity that may be preselected. An unset cap falls
+// back to major, which reproduces the original rule that a major is never
+// preselected.
+func (h *HuhPrompter) selectCap() core.UpdateType {
+	if h.maxUpdate == "" {
+		return core.UpdateTypeMajor
+	}
+
+	return h.maxUpdate
+}
+
+// tableWidth is the column budget available for a row.
+func (h *HuhPrompter) tableWidth() int {
+	if h.width > 0 {
+		return h.width
+	}
+
+	// huh draws on stderr, so its rows are budgeted against stderr's width.
+	return ui.TerminalWidth(os.Stderr) - huhChrome
 }
 
 // resolveGroups expands the selected groups back into individual updates.
@@ -138,7 +195,7 @@ func (h *HuhPrompter) narrowGroup(group updateGroup) ([]core.ImageUpdate, error)
 		),
 	)
 
-	if err := form.Run(); err != nil {
+	if err := h.run(form); err != nil {
 		return nil, err
 	}
 
@@ -185,20 +242,21 @@ func sortGroupsByRelevance(groups []updateGroup) []updateGroup {
 	copy(ordered, groups)
 
 	sort.SliceStable(ordered, func(i, j int) bool {
-		return scoreUpdateType(ordered[i].Head.UpdateType) > scoreUpdateType(ordered[j].Head.UpdateType)
+		return core.Severity(ordered[i].Head.UpdateType) > core.Severity(ordered[j].Head.UpdateType)
 	})
 
 	return ordered
 }
 
-// rowsFor renders the group table, truncating to the terminal so no row wraps.
-func rowsFor(groups []updateGroup) []string {
+// rowsFor renders the group table, truncating to the given width so no row
+// wraps.
+func rowsFor(groups []updateGroup, width int) []string {
 	rows := make([]ui.Row, 0, len(groups))
 	for _, group := range groups {
 		rows = append(rows, rowFor(group))
 	}
 
-	return ui.RenderRows(rows, ui.TerminalWidth(os.Stderr)-huhChrome)
+	return ui.RenderRows(rows, width)
 }
 
 func rowFor(group updateGroup) ui.Row {
@@ -304,19 +362,4 @@ func filterByKeys(updates []core.ImageUpdate, keys []string) []core.ImageUpdate 
 	}
 
 	return filtered
-}
-
-func scoreUpdateType(t core.UpdateType) int {
-	switch t {
-	case core.UpdateTypeMajor:
-		return scoreMajor
-	case core.UpdateTypeMinor:
-		return scoreMinor
-	case core.UpdateTypePatch:
-		return scorePatch
-	case core.UpdateTypeNone:
-		return scoreNone
-	default:
-		return scoreOther
-	}
 }

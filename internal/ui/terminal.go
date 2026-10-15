@@ -17,6 +17,12 @@ const (
 	// minUsableWidth guards against absurdly small reported sizes, which
 	// some CI environments report for non-terminal file descriptors.
 	minUsableWidth = 20
+
+	// dumbTermEnv and dumbTerm are the signal that the terminal cannot render a
+	// full-screen widget, which is also exactly when huh switches to its
+	// accessible renderer.
+	dumbTermEnv = "TERM"
+	dumbTerm    = "dumb"
 )
 
 // IsTerminal reports whether f is an interactive terminal.
@@ -26,6 +32,20 @@ func IsTerminal(f *os.File) bool {
 	}
 
 	return term.IsTerminal(f.Fd())
+}
+
+// CanPrompt reports whether an interactive form can be shown and answered on f.
+//
+// A real terminal is the normal case, but huh falls back to a numbered,
+// line-driven list when TERM is "dumb" (form.go switches on exactly this value),
+// which is what makes a piped or scripted run answerable. Asking a stricter
+// question than the renderer does would refuse a prompt that works.
+func CanPrompt(f *os.File) bool {
+	if IsTerminal(f) {
+		return true
+	}
+
+	return os.Getenv(dumbTermEnv) == dumbTerm
 }
 
 // TerminalWidth returns the width of f in columns. It falls back to

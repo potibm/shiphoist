@@ -1,20 +1,12 @@
 package main
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"os"
-	"time"
+	"strings"
 
 	"github.com/spf13/cobra"
-
-	"github.com/potibm/shiphoist/internal/core"
-	"github.com/potibm/shiphoist/internal/discovery"
-	"github.com/potibm/shiphoist/internal/engine"
-	"github.com/potibm/shiphoist/internal/patcher"
-	"github.com/potibm/shiphoist/internal/registry"
-	"github.com/potibm/shiphoist/internal/tui"
-	"github.com/potibm/shiphoist/internal/ui"
 )
 
 var (
@@ -23,198 +15,95 @@ var (
 	Date    = "unknown"
 )
 
-const cacheTTLMinutes = 15
-
-func buildFetcher(forceRefresh bool) (core.RegistryFetcher, error) {
-	cacheTTL := cacheTTLMinutes * time.Minute
-
-	var client registry.RegistryClient = registry.NewRemoteClient()
-
-	cachedClient, err := registry.NewCachedClient(client, cacheTTL, forceRefresh)
-	if err != nil {
-		fmt.Printf("⚠️  Failed to init cache, running without: %v\n", err)
-	} else {
-		client = cachedClient
-	}
-
-	return registry.NewDefaultFetcher(client), nil
-}
+const (
+	rootShort = "Interactively update and SHA256-pin Docker images in Compose files and Dockerfiles"
+	checkUse  = "check [image-reference]"
+)
 
 func main() {
-	var (
-		forceRefresh bool
-		verbose      bool
-	)
+	if err := newRootCmd(newDeps()).Execute(); err != nil {
+		// errIncompleteRun is a run outcome, not a malfunction: the report
+		// already names the images, so printing it here would only duplicate
+		// that. It still has to reach the exit code.
+		if !errors.Is(err, errIncompleteRun) {
+			fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		}
 
-	rootCmd := &cobra.Command{
-		Use:   "shiphoist [path-to-docker-compose.yml]",
-		Short: "Interactively update and SHA256-pin Docker images in Compose files",
-		Args:  cobra.ExactArgs(1),
-		Run:   runRootCommand(&forceRefresh, &verbose),
-	}
-
-	rootCmd.PersistentFlags().BoolVarP(&forceRefresh, "force", "f", false, "Force refresh by bypassing the local cache")
-	rootCmd.PersistentFlags().
-		BoolVarP(&verbose, "verbose", "v", false, "Report one line per image instead of a single progress bar")
-	rootCmd.Version = fmt.Sprintf("%s (Commit: %s, Date: %s)", Version, Commit, Date)
-
-	checkCmd := &cobra.Command{
-		Use:   "check [image-reference]",
-		Short: "Check a single Docker image for available updates",
-		Long: `Check a single Docker image reference for available updates.
-Example: shiphoist check ghcr.io/potibm/kasseapparat:2.18.0`,
-		Args: cobra.ExactArgs(1),
-		Run:  runCheckCommand(&forceRefresh),
-	}
-
-	rootCmd.AddCommand(checkCmd)
-
-	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
-func runRootCommand(forceRefresh, verbose *bool) func(cmd *cobra.Command, args []string) {
-	return func(cmd *cobra.Command, args []string) {
-		filePath := args[0]
+// newRootCmd wires the CLI. It returns the command instead of running it so a
+// test can drive it through cobra's own flag parsing.
+func newRootCmd(d deps) *cobra.Command {
+	var opts options
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+	rootCmd := &cobra.Command{
+		Use:   "shiphoist [path-to-compose-file-or-Dockerfile]",
+		Short: rootShort,
+		Long: `Interactively update and SHA256-pin the images in a Docker Compose file or a
+Dockerfile. The format is detected from the file name.
 
-		activeFetcher, err := buildFetcher(*forceRefresh)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "❌ Error initializing fetcher: %v\n", err)
-			os.Exit(1)
-		}
-
-		pipeline := &engine.Pipeline{
-			Discoverer: &discovery.ComposeDiscoverer{},
-			Fetcher:    activeFetcher,
-			Patcher:    &patcher.FilePatcher{},
-			Prompter:   tui.NewHuhPrompter(),
-			Verbose:    *verbose,
-		}
-
-		if *forceRefresh {
-			fmt.Println("🔄 Force refresh activated - bypassing cache...")
-		}
-
-		fmt.Printf("🚢 Hoisting sails for %s...\n", filePath)
-
-		updates, err := pipeline.ProcessFile(ctx, filePath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "❌ Error processing file: %v\n", err)
-			os.Exit(1)
-		}
-
-		if len(updates) == 0 {
-			fmt.Println("✅ Everything is up to date! No changes needed.")
-
-			return
-		}
-
-		fmt.Printf("✅ Successfully applied %d updates:\n\n", len(updates))
-
-		for _, u := range updates {
-			if u.UpdateType == core.UpdateTypeNone {
-				fmt.Printf("  📌 %s: pinned to new digest\n", u.Label())
-			} else {
-				fmt.Printf("  🚀 %s: %s -> %s (%s)\n", u.Label(), u.OldTag, u.NewTag, u.UpdateType)
-			}
-		}
+Example: shiphoist docker-compose.yml
+        shiphoist Dockerfile`,
+		Args: cobra.ExactArgs(1),
+		// A failure is reported once, by main. Printing it here as well would
+		// duplicate it, and usage text would bury the actual cause.
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(_ *cobra.Command, args []string) error {
+			return runUpdate(d, opts, args[0])
+		},
 	}
+
+	// Cobra's own output (version, usage, help) goes to the injected sinks too,
+	// so nothing a test cannot see is ever written straight to the process.
+	rootCmd.SetOut(d.Out)
+	rootCmd.SetErr(d.ErrOut)
+
+	registerSharedFlags(rootCmd, &opts)
+	registerUpdateFlags(rootCmd, &opts)
+
+	rootCmd.Version = fmt.Sprintf("%s (Commit: %s, Date: %s)", Version, Commit, Date)
+
+	checkCmd := &cobra.Command{
+		Use:   checkUse,
+		Short: "Check a single Docker image for available updates",
+		Long: `Check a single Docker image reference for available updates.
+Example: shiphoist check ghcr.io/potibm/kasseapparat:2.18.0`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return runCheck(d, opts, args[0])
+		},
+	}
+
+	rootCmd.AddCommand(checkCmd)
+
+	return rootCmd
 }
 
-func runCheckCommand(forceRefresh *bool) func(cmd *cobra.Command, args []string) {
-	return func(cmd *cobra.Command, args []string) {
-		imageRef := args[0]
+// registerSharedFlags binds the flags both commands understand. They are
+// persistent so `check` can reuse them.
+func registerSharedFlags(rootCmd *cobra.Command, opts *options) {
+	flags := rootCmd.PersistentFlags()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		activeFetcher, err := buildFetcher(*forceRefresh)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "❌ Error initializing fetcher: %v\n", err)
-			os.Exit(1)
-		}
-
-		imageName, oldTag, oldDigest := discovery.ParseImageReference(imageRef)
-
-		fmt.Printf("🔍 Checking %s...\n\n", imageRef)
-
-		current := core.ImageUpdate{
-			ImageName: imageName,
-			OldTag:    oldTag,
-			OldDigest: oldDigest,
-		}
-
-		updated, err := activeFetcher.FetchUpdate(ctx, current)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "❌ Error checking image: %v\n", err)
-			os.Exit(1)
-		}
-
-		printCheckResult(updated)
-	}
+	flags.BoolVarP(&opts.ForceRefresh, "force", "f", false, "Force refresh by bypassing the local cache")
+	flags.BoolVarP(&opts.Verbose, "verbose", "v", false, "Report one line per image instead of a single progress bar")
 }
 
-func printCheckResult(updated core.ImageUpdate) {
-	fmt.Printf("📦 Image:  %s\n", updated.Label())
+// registerUpdateFlags binds the flags that only mean something when a file is
+// updated.
+//
+// They are local rather than persistent so that `check --json` is a usage error
+// instead of being silently ignored: a flag that quietly does nothing is worse
+// than one that refuses.
+func registerUpdateFlags(rootCmd *cobra.Command, opts *options) {
+	flags := rootCmd.Flags()
 
-	printCurrentTagInfo(updated)
-	printLatestTagInfo(updated)
-
-	if updated.MajorTag != "" {
-		fmt.Printf("⚠️  Major available: %s (not preselected)\n", updated.MajorTag)
-	}
-}
-
-func printCurrentTagInfo(updated core.ImageUpdate) {
-	if updated.OldTagMissing {
-		fmt.Printf("⚠️  Tag %s not found in registry (deleted?)\n", updated.OldTag)
-
-		return
-	}
-
-	fmt.Printf("🏷  Current: %s", updated.OldTag)
-
-	if updated.CurrentDigest != "" {
-		fmt.Printf(" (digest: %s)", ui.ShortDigest(updated.CurrentDigest))
-	}
-
-	if updated.OldDigest != "" && updated.OldDigest != updated.CurrentDigest {
-		fmt.Printf(" [pinned: %s]", ui.ShortDigest(updated.OldDigest))
-	}
-
-	fmt.Println()
-}
-
-func printLatestTagInfo(updated core.ImageUpdate) {
-	switch {
-	case updated.Selected && updated.NewTag != updated.OldTag:
-		fmt.Printf("🚀 Latest:  %s (%s)", updated.NewTag, updated.UpdateType)
-
-		if updated.NewDigest != "" {
-			fmt.Printf(" (digest: %s)", ui.ShortDigest(updated.NewDigest))
-		}
-
-		fmt.Println()
-	case updated.Selected && updated.NewTag == updated.OldTag:
-		fmt.Printf("📌 Pin to digest: %s\n", ui.ShortDigest(updated.NewDigest))
-	case updated.UpdateType == core.UpdateTypeNone && updated.NewTag == updated.OldTag:
-		printUpToDateStatus(updated)
-	default:
-		fmt.Printf("📌 Latest:  %s (pinned to digest)\n", updated.NewTag)
-	}
-}
-
-func printUpToDateStatus(updated core.ImageUpdate) {
-	switch {
-	case updated.OldTagMissing && updated.NoCompatibleTags:
-		fmt.Println("ℹ️  No SemVer-compatible tags in repo (restructured/renamed?)")
-	case updated.OldTagMissing:
-		fmt.Println("ℹ️  No newer tags available")
-	default:
-		fmt.Println("✅ Up to date!")
-	}
+	flags.BoolVar(&opts.DryRun, "dry-run", false, "Report the updates that would apply, without writing them")
+	flags.BoolVarP(&opts.Yes, "yes", "y", false, "Apply every update within --mode without asking")
+	flags.BoolVar(&opts.JSON, "json", false, "Write a machine-readable report to stdout, keeping progress on stderr")
+	flags.BoolVarP(&opts.Quiet, "quiet", "q", false, "Suppress the progress bar, the summary and skipped images")
+	flags.StringVar(&opts.Mode, "mode", "", "Limit updates to "+strings.Join(modeNames, ", "))
+	flags.StringVar(&opts.Exclude, "exclude", "", "Skip images whose repository matches this regular expression")
 }

@@ -1,14 +1,21 @@
 package tui
 
 import (
+	"errors"
 	"hash/crc32"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/potibm/shiphoist/internal/core"
 )
+
+// wideTableWidth is wide enough that no test row is ever truncated, so
+// assertions can look for content rather than an ellipsis.
+const wideTableWidth = 200
 
 func testUpdate(service, image, oldTag, newTag string, updateType core.UpdateType) core.ImageUpdate {
 	return core.ImageUpdate{
@@ -28,39 +35,6 @@ func testUpdate(service, image, oldTag, newTag string, updateType core.UpdateTyp
 // discovery output where every reference has its own address.
 func lineNumberFor(service string) int {
 	return int(crc32.ChecksumIEEE([]byte(service))%1000) + 4
-}
-
-func TestScoreUpdateType(t *testing.T) {
-	tests := []struct {
-		name     string
-		update   core.UpdateType
-		expected int
-	}{
-		{name: "major outranks all", update: core.UpdateTypeMajor, expected: scoreMajor},
-		{name: "minor", update: core.UpdateTypeMinor, expected: scoreMinor},
-		{name: "patch", update: core.UpdateTypePatch, expected: scorePatch},
-		{name: "none", update: core.UpdateTypeNone, expected: scoreNone},
-		{name: "unknown falls back", update: core.UpdateType("weird"), expected: scoreOther},
-		{name: "empty falls back", update: core.UpdateType(""), expected: scoreOther},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := scoreUpdateType(tc.update); got != tc.expected {
-				t.Errorf("scoreUpdateType(%q) = %d, want %d", tc.update, got, tc.expected)
-			}
-		})
-	}
-}
-
-func TestScoreUpdateType_Ordering(t *testing.T) {
-	descending := []int{scoreMajor, scoreMinor, scorePatch, scoreNone, scoreOther}
-
-	for i := 1; i < len(descending); i++ {
-		if descending[i-1] <= descending[i] {
-			t.Errorf("expected strict descending order, got %v", descending)
-		}
-	}
 }
 
 // Identical references across services collapse to a single row.
@@ -175,20 +149,52 @@ func TestUpdateGroup_SafeToApply(t *testing.T) {
 	tests := []struct {
 		name       string
 		updateType core.UpdateType
+		maxUpdate  core.UpdateType
 		expected   bool
 	}{
-		{name: "patch is safe", updateType: core.UpdateTypePatch, expected: true},
-		{name: "minor is safe", updateType: core.UpdateTypeMinor, expected: true},
-		{name: "pinning is safe", updateType: core.UpdateTypeNone, expected: true},
-		{name: "major is never pre-selected", updateType: core.UpdateTypeMajor, expected: false},
+		{name: "patch is safe", updateType: core.UpdateTypePatch, maxUpdate: core.UpdateTypeMajor, expected: true},
+		{name: "minor is safe", updateType: core.UpdateTypeMinor, maxUpdate: core.UpdateTypeMajor, expected: true},
+		{name: "pinning is safe", updateType: core.UpdateTypeNone, maxUpdate: core.UpdateTypeMajor, expected: true},
+		{
+			name:       "major is never pre-selected",
+			updateType: core.UpdateTypeMajor,
+			maxUpdate:  core.UpdateTypeMajor,
+			expected:   false,
+		},
+		{
+			name:       "minor is withheld by a patch cap",
+			updateType: core.UpdateTypeMinor,
+			maxUpdate:  core.UpdateTypePatch,
+			expected:   false,
+		},
+		{
+			name:       "patch survives a patch cap",
+			updateType: core.UpdateTypePatch,
+			maxUpdate:  core.UpdateTypePatch,
+			expected:   true,
+		},
+		{
+			name:       "pinning survives a minor cap",
+			updateType: core.UpdateTypeNone,
+			maxUpdate:  core.UpdateTypeMinor,
+			expected:   true,
+		},
+		{
+			// The cap is a ceiling the user asked for. It must never be able to
+			// reopen the major-update safety floor.
+			name:       "a major cap still withholds a major",
+			updateType: core.UpdateTypeMajor,
+			maxUpdate:  core.UpdateTypeMajor,
+			expected:   false,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			group := updateGroup{Head: core.ImageUpdate{UpdateType: tc.updateType}}
 
-			if got := group.safeToApply(); got != tc.expected {
-				t.Errorf("safeToApply() = %v, want %v", got, tc.expected)
+			if got := group.safeToApply(tc.maxUpdate); got != tc.expected {
+				t.Errorf("safeToApply(%q) = %v, want %v", tc.maxUpdate, got, tc.expected)
 			}
 		})
 	}
@@ -349,7 +355,7 @@ func TestRowsFor_RendersTabularOutput(t *testing.T) {
 		},
 	}
 
-	rows := rowsFor(groups)
+	rows := rowsFor(groups, wideTableWidth)
 
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 rows, got %d: %v", len(rows), rows)
@@ -532,5 +538,175 @@ func TestFilterByKeys_PreservesInputOrder(t *testing.T) {
 		if got[i].LineNumber != line {
 			t.Errorf("position %d: expected line %d, got %d", i, line, got[i].LineNumber)
 		}
+	}
+}
+
+// confirm is the accessible-mode input that accepts whatever the form
+// preselected, which is the only keystroke a test needs: everything it can
+// assert on is what shiphoist chose to preselect.
+const confirm = "\n"
+
+// testPrompter drives the real huh form without a terminal.
+func testPrompter(t *testing.T) (*HuhPrompter, *strings.Builder) {
+	t.Helper()
+
+	var rendered strings.Builder
+
+	return &HuhPrompter{
+		run:   runFrom(strings.NewReader(confirm), &rendered),
+		width: wideTableWidth,
+	}, &rendered
+}
+
+func TestSelectUpdates_AppliesPreselectedUpdatesByDefault(t *testing.T) {
+	updates := []core.ImageUpdate{
+		testUpdate("db", "postgres", "16.2", "16.3", core.UpdateTypeMinor),
+		testUpdate("cache", "redis", "7.2.1", "7.2.2", core.UpdateTypePatch),
+	}
+
+	prompter, _ := testPrompter(t)
+
+	selected, err := prompter.SelectUpdates(updates)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(selected) != 2 {
+		t.Fatalf("expected both safe updates to be applied, got %d: %+v", len(selected), selected)
+	}
+
+	assertServices(t, selected, []string{"db", "cache"})
+}
+
+func TestSelectUpdates_MajorIsNotPreselected(t *testing.T) {
+	updates := []core.ImageUpdate{
+		testUpdate("db", "postgres", "16.2", "17.0", core.UpdateTypeMajor),
+		testUpdate("cache", "redis", "7.2.1", "7.2.2", core.UpdateTypePatch),
+	}
+
+	prompter, rendered := testPrompter(t)
+
+	selected, err := prompter.SelectUpdates(updates)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(selected) != 1 || selected[0].ServiceName != "cache" {
+		t.Fatalf("expected only the patch update, got %+v", selected)
+	}
+
+	// The table is the safety mechanism: a major bump has to be visible and
+	// visibly unselected, not merely absent from the result.
+	if !strings.Contains(rendered.String(), "🔴") {
+		t.Errorf("expected the major update to be rendered with a red marker:\n%s", rendered.String())
+	}
+}
+
+func TestSelectUpdates_SharedUpdateDrillDownKeepsEveryMember(t *testing.T) {
+	first := testUpdate("db", "ghcr.io/potibm/billedapparat", "0.11", "0.12", core.UpdateTypePatch)
+	second := testUpdate("mastodon", "ghcr.io/potibm/billedapparat", "0.11", "0.12", core.UpdateTypePatch)
+	second.LineNumber = first.LineNumber + 5
+
+	prompter, _ := testPrompter(t)
+
+	selected, err := prompter.SelectUpdates([]core.ImageUpdate{first, second})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// One row, but both services are patched, each at its own line.
+	if len(selected) != 2 {
+		t.Fatalf("expected both members of the shared update, got %+v", selected)
+	}
+
+	assertServices(t, selected, []string{"db", "mastodon"})
+
+	if selected[0].LineNumber == selected[1].LineNumber {
+		t.Errorf("expected each member to keep its own line, both got %d", selected[0].LineNumber)
+	}
+}
+
+func TestSelectUpdates_EmptyInputIsNoop(t *testing.T) {
+	prompter, rendered := testPrompter(t)
+
+	selected, err := prompter.SelectUpdates(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(selected) != 0 {
+		t.Errorf("expected no updates, got %+v", selected)
+	}
+
+	if rendered.String() != "" {
+		t.Errorf("expected no form to be rendered, got %q", rendered.String())
+	}
+}
+
+func TestSelectUpdates_FormErrorIsReturned(t *testing.T) {
+	prompter := &HuhPrompter{
+		run:   func(*huh.Form) error { return errors.New("terminal exploded") },
+		width: wideTableWidth,
+	}
+
+	updates := []core.ImageUpdate{testUpdate("db", "postgres", "16.2", "16.3", core.UpdateTypeMinor)}
+
+	if _, err := prompter.SelectUpdates(updates); err == nil {
+		t.Fatal("expected the form error to be returned")
+	}
+}
+
+// assertServices checks the services of the given updates, in order.
+func assertServices(t *testing.T, updates []core.ImageUpdate, want []string) {
+	t.Helper()
+
+	got := make([]string, 0, len(updates))
+	for _, u := range updates {
+		got = append(got, u.ServiceName)
+	}
+
+	if !slices.Equal(got, want) {
+		t.Errorf("expected services %v, got %v", want, got)
+	}
+}
+
+// A --mode cap must leave its rows visible but unchecked, so the user can see
+// that a bigger jump exists. The accessible form confirms whatever is
+// preselected, so a withheld row comes back unselected.
+func TestSelectUpdates_ModeCapWithholdsButStillShows(t *testing.T) {
+	updates := []core.ImageUpdate{
+		testUpdate("patched", "redis", "7.2.1", "7.2.2", core.UpdateTypePatch),
+		testUpdate("minored", "nginx", "1.25.0", "1.26.0", core.UpdateTypeMinor),
+	}
+
+	prompter, rendered := testPrompter(t)
+	prompter.maxUpdate = core.UpdateTypePatch
+
+	selected, err := prompter.SelectUpdates(updates)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertServices(t, selected, []string{"patched"})
+
+	// Withheld, not hidden: the row is still on screen, so the user can opt in.
+	assertContains(t, rendered.String(), "nginx")
+	assertContains(t, rendered.String(), "1.25.0 → 1.26.0")
+}
+
+func TestSelectCap_DefaultsToMajor(t *testing.T) {
+	// An unset cap must reproduce the original rule, not disable pre-selection.
+	prompter := &HuhPrompter{}
+
+	if got := prompter.selectCap(); got != core.UpdateTypeMajor {
+		t.Errorf("expected the cap to default to major, got %q", got)
+	}
+}
+
+func assertContains(t *testing.T, got, want string) {
+	t.Helper()
+
+	if !strings.Contains(got, want) {
+		t.Errorf("expected %q in:\n%s", want, got)
 	}
 }

@@ -44,17 +44,96 @@ contain no escape sequences. `--verbose` restores one line per image. Registry
 failures are collected and printed as a block once the line is erased, so they
 cannot break the single line while it is being redrawn.
 
-### 3. CI/CD Mode (Planned: `--yes`)
-For pipelines, Makefiles, or automation. Will skip the UI and immediately apply all safe (pre-selected) updates.
+### 3. CI/CD Mode (`--yes`, optionally with `--dry-run` or `--json`)
+For pipelines, Makefiles, or automation. Skips the form and applies every update
+within the `--mode` cap. See "Update Caps" below.
 
----
+## Update Caps
+
+`--mode` names the largest jump that may be applied. The ranking lives in
+`core.Severity` rather than in the UI, because the interactive table and the
+non-interactive selector both have to reason about it and neither may import the
+other:
+
+```go
+SeverityMajor > SeverityMinor > SeverityPatch > SeverityPin > SeverityUnknown
+```
+
+A cap is enforced differently in the two modes, and the difference is the whole
+design:
+
+| | Interactively | With `--yes` |
+| --- | --- | --- |
+| Row above the cap | shown, unchecked | not offered at all |
+| Why | the user can see a bigger jump exists and opt into it deliberately | there is nobody to ask, so "not pre-selected" can only mean "not applied" |
+
+`internal/prompting.Apply` is therefore a different type from the TUI, not a
+configured instance of it. Filtering the TUI's input would have hidden the rows
+and thrown away the information the cap exists to preserve.
+
+`updateGroup.safeToApply` is deliberately two conditions:
+
+```go
+severity < SeverityMajor && severity <= Severity(maxUpdate)
+```
+
+The first is a floor, the second a ceiling. A cap is something the user asked
+for, so it may only tighten the automatic selection; it must never be able to
+reopen the major-update safety floor. Collapsing this to a single comparison
+would let `--mode major` pre-select a major bump.
+
+## Non-Interactive Operation
+
+`--yes` substitutes `prompting.Apply` for the TUI. `--dry-run` sets
+`Pipeline.DryRun`, which resolves and reports the selection but never calls the
+`Patcher`, so the report names precisely the changes a real run would write.
+
+`--quiet` adds a `modeQuiet` to `ui.Progress`, which writes nothing at all — not
+the bar, not the summary, not the failure block. It still *returns* the
+collected failures, because the report and the exit code are built from them;
+hiding the chatter must not lose the record.
+
+### stdout and stderr
+
+`--json` gives stdout to the report and moves every human-facing line to stderr
+via one helper, `humanOut`. The result table and banner follow, so a CI log
+shows what was attempted next to the machine-readable result. This is why
+`Pipeline.Out` and the CLI's own printing are wired to the same writer choice
+rather than to `os.Stdout` directly.
+
+`--json` and `--verbose` are rejected together: both promise one line per image,
+and honouring both would corrupt the document.
+
+### When there is no terminal
+
+Without a TTY, and without `--yes`, shiphoist fails with advice rather than
+letting the form library produce an opaque error. The check is `ui.CanPrompt`,
+which asks exactly the question the renderer answers: a real terminal, **or**
+`TERM=dumb`, where `huh` switches to its accessible numbered list. Asking a
+stricter question than the renderer does would refuse a prompt that works.
+
+### Exit codes
+
+An unresolvable image is a *report outcome*, not a failure of shiphoist: healthy
+images are still updated and the rest are listed in `Report.Failures`. Whether
+that also fails the process depends on the mode:
+
+| Mode | Unresolved images | Exit |
+| --- | --- | --- |
+| interactive | reported, run continues | `0` |
+| `--yes` / `--json` | reported, run continues | `1` |
+
+`--yes` and `--json` are the modes a pipeline uses, so they are the modes where an
+image nobody could check has to fail the build. The sentinel `errIncompleteRun`
+carries that without a message, because `main` must not print it: the report
+already names the images, and printing an error line too would be duplication.
 
 ## 🏗️ Architecture: The Hybrid Approach
 
 To avoid the weaknesses of pure AST parsers (destroy formatting/comments) and dumb regex scanners (false positives), *shiphoist* uses a two-stage hybrid approach:
 
 1. **Discovery Phase (Parser):**
-   Real parsers (`github.com/goccy/go-yaml` for Compose, `moby/buildkit` for Dockerfiles) read the file and find validated images. The parser provides the **exact line number**.
+   Real parsers read the file and find validated images. The parser provides the **exact line number**. Compose files are parsed with `github.com/goccy/go-yaml` into an AST. Dockerfiles are scanned line by line: the only instruction that matters is `FROM`, a scan yields line numbers directly, and the existing line-based `Patcher` already needs them.
 2. **Patching Phase (Regex/Line-Scanner):**
    The file is read as raw text. A patcher jumps precisely to the determined line number and performs the regex replacement of the tag *only there*.
 
@@ -82,7 +161,16 @@ The filtered list of tags is parsed and sorted in descending order by `Mastermin
 * `v1.2.3` ➡️ `v1.3.0` = **Minor** (Selected: true)
 * `v1.2.3` ➡️ `v2.0.0` = **Major** (Selected: false ⚠️)
 
-### 4. Digest Resolution
+### 4. Precision as a Preference, Not a Filter
+Candidates are first narrowed to the tags carrying the *same number of version components* as the current one, so a pinned `1.2.3` is never handed a `1.2.4.1` that happens to sort higher.
+
+That narrowing is a preference, not a filter: when the same-precision set holds **nothing newer in the current major**, the search widens to every tag sharing the base suffix and the newest tag of the major wins.
+
+This is what keeps channel tags honest. `node:22-alpine` publishes alongside `22.23.3-alpine`, and `22` sorts *below* it, so a strict precision filter leaves the channel tag permanently reporting "Up to date" — the exact bug this rule exists to prevent. The same widening is what lets `8.8` see `8.10.2`.
+
+Within a single precision the newest tag of the major wins regardless of minor magnitude: `1.2.3` does become `1.4.0` when no `1.2.4` exists. That is deliberate — the precision rule is about the *shape* of a tag, not the size of the jump. A widened update is therefore ranked by its absolute version jump, so `16-alpine -> 16.11-alpine` reads as *minor* and `--mode patch` skips it (a known gap, tracked in TODO.md).
+
+### 5. Digest Resolution
 Once the new target tag is determined, *shiphoist* specifically fetches the manifest for this tag from the registry to extract the cryptographic SHA256 digest for "immutable pinning".
 
 ---
@@ -155,6 +243,48 @@ services apply the change to both.
 degrades to just the image name when the source format has no named service.
 
 
+## The Run Report
+
+`Pipeline.ProcessFile` returns a `core.Report` rather than a bare slice of
+updates. A slice cannot express the outcomes a caller legitimately needs to act
+on: an image that could not be checked, a run that checked fewer images than it
+found references because they deduplicated, or a run that resolved everything
+but wrote nothing.
+
+```go
+type Report struct {
+    File       string        `json:"file"`
+    Updates    []ImageUpdate `json:"updates"`
+    Failures   []Failure     `json:"failures"`
+    Checked    int           `json:"checked"`     // distinct registry lookups
+    References int           `json:"references"`  // declarations found
+    ElapsedMS  int64         `json:"elapsed_ms"`
+    Written    bool          `json:"written"`
+    DryRun     bool          `json:"dry_run"`
+}
+```
+
+Two decisions are load-bearing:
+
+* **A failure is not an error.** A registry that 401s on one image is reported
+  in `Failures` and skipped, and the run still patches everything else. An
+  `error` return means the *run* could not complete — bad YAML, an unwritable
+  file, a cancelled context — and then no report is returned at all. This keeps
+  "some images failed" separable from "shiphoist did not run".
+* **`Written` and `DryRun` are separate.** A dry run that resolved three updates
+  reports `dry_run: true, written: false`; a run where the user deselected
+  everything reports `dry_run: false, written: false`. A single boolean could not
+  tell those apart, and a CI job needs to.
+
+`MarshalJSON` normalises nil slices to `[]`. A report built by any route
+serialises to the same shape, so a machine reader never has to handle both `[]`
+and `null`. The guarantee lives on the type rather than in a constructor
+precisely so it cannot be forgotten.
+
+`Report` is also the payload a future `--json` serialises verbatim, which is why
+the tags are snake_case and every field is present: adding a field to a JSON
+document is safe, renaming one is not.
+
 ## Core Interfaces
 
 Clean separation of responsibilities for easy extensibility and testability.
@@ -219,6 +349,98 @@ The TUI applies the mirror-image idea: identical *results* share a row marked
 `×8`, and selecting one opens a second prompt to narrow which services apply.
 Grouping a result is safe precisely because the fan-out keeps members distinct.
 
+## Filtering References
+
+An image can be left alone two ways, and they are implemented at different
+layers on purpose.
+
+**`# shiphoist-ignore` lives in `ComposeDiscoverer`.** The comment only exists in
+the source text and is gone once the file has been reduced to tokens, so no
+decorator could honour it — by the time an outer layer sees an `ImageUpdate`,
+the comment has already been discarded. The discoverer already holds the raw
+bytes, so it reads the line back.
+
+It is read from the source line starting at the token's `Column`, not from the
+AST. `goccy/go-yaml` attaches comments through two different functions
+(`setLineComment` and `setHeadComment`) depending on which parser path built the
+node, so which node holds the comment is not a stable contract. Scanning the
+text avoids the question and is more precise besides: anything before the
+reference is YAML, and cannot be a trailing comment on it.
+
+The directive must be the **first thing in the comment**, with an optional free-form
+reason after it. A substring match would treat `# TODO shiphoist-ignore later` as
+a directive, and silently skipping an image the user still wants updated is the
+worse error. The line is still inspected when the column is unusable, because
+missing a directive that is there means rewriting an image the user asked us to
+leave alone.
+
+**`--exclude` is a `Discoverer` decorator.** Matching a repository needs only
+`ImageName`, so it is format-agnostic and a decorator is the right shape: the
+Dockerfile discoverer will get it for free.
+
+The pattern is matched against the repository, never the tag. Excluding a
+registry or a namespace is what the flag is for, and matching the full reference
+would make `^nginx$` silently match nothing, since the reference is really
+`nginx:1.25.0`.
+
+### Accounting for what was skipped
+
+`Report.References` counts what discovery *returned*, so a filtered run would
+under-report the file. `Report.Filtered` carries the skipped references with
+their line numbers and reasons, which is what makes "why did CI not update X?"
+answerable. `Report.References` plus `len(Report.Filtered)` is the file's true
+image count.
+
+A discoverer reports its own skips through `core.FilteredDiscoverer`, and
+`ExcludeDiscoverer.Filtered` returns its skips *plus* the inner discoverer's, so
+a caller only ever asks the outermost one. The engine does not know any of this:
+the CLI assembles the chain, so the CLI is what completes the report with it.
+
+## Two Discoverers, One Contract
+
+Both formats implement the same `Discoverer` interface and the same
+`FilteredDiscoverer` extension, and both produce `ImageUpdate` values the engine
+cannot tell apart. The engine stays format-agnostic; `discovery.ForFile` picks
+the implementation from the file name (`Dockerfile`, `Dockerfile.prod`,
+`app.Dockerfile`; everything else Compose), so neither invocation needs a flag.
+
+Because the contract is shared, so is everything built on it: the selection
+table, the `--exclude` decorator, the report, the exit codes and `--dry-run` all
+work on a Dockerfile with no additional code. `ImageUpdate.ServiceName` carries
+the Compose service name or the Dockerfile stage, which is what lets the table
+label either without a special case.
+
+### Why a Dockerfile is scanned, not parsed
+
+A dedicated parser such as `moby/buildkit` would be more rigorous, at the cost of
+a large dependency for one instruction. The line scan is the same trade already
+made for the progress bar and the table layout: trivial parsing is cheaper to do
+directly than to pull in a framework for.
+
+The scan therefore only claims what it fully understands:
+
+- `FROM` and `as` are matched case-insensitively, and `--platform=...` or any
+  other leading flag is skipped.
+- A `#` only starts a comment when preceded by whitespace, so one inside a token
+  is not mistaken for a comment.
+- A `FROM` with an `AS` and no name is malformed — Docker rejects it too — and is
+  reported as nothing rather than as an unnamed stage.
+- `COPY --from=builder` is not a `FROM`, and neither is text inside a `RUN`.
+
+### What a Dockerfile deliberately does not update
+
+Two kinds of `FROM` are reported as filtered instead of rewritten:
+
+- **Build arguments**, `FROM node:$NODE_VERSION`. A `$` cannot appear in a real
+  image reference, so its presence marks a substitution — and it can be in the
+  *tag*, not just at the start. The `ARG` default is only a default: `--build-arg`
+  overrides it, so rewriting the `ARG` line would change the build's fallback
+  rather than the image the stage actually uses.
+- **`FROM scratch`**, the empty base image, which has no tags or digest.
+
+Both surface through `Report.Filtered` with their own reasons, so a run states
+what it declined to touch instead of quietly covering less than it appears to.
+
 ## Terminal Rendering
 
 `internal/ui` holds all presentation logic, free of pipeline concerns so it can
@@ -233,9 +455,13 @@ be unit tested without a terminal:
   it. The marker, version and kind columns are never shrunk, since they carry
   the meaning of the row.
 * `progress.go` — the bar reporter, safe for concurrent use because a run
-  advances from one goroutine per image.
-* `terminal.go` — TTY detection and width via `charmbracelet/x/term`. The bar is
-  drawn for real terminals only; anything else gets the summary alone.
+  advances from one goroutine per image. Its four modes are `modeQuiet`,
+  `modeSilent`, `modeBar` and `modeVerbose`, in increasing order of insistence,
+  so `--quiet` needs no special casing at the call sites.
+* `terminal.go` — TTY detection and width via `charmbracelet/x/term`, plus
+  `CanPrompt`, which answers "can a form be answered here?" rather than "is this
+  a TTY?". The bar is drawn for real terminals only; anything else gets the
+  summary alone.
 
 Neither `bubbles/spinner` nor `bubbles/progress` is used. Their models animate
 through `bubbletea`, which would pull a large dependency into a direct
@@ -278,3 +504,17 @@ backoff with jitter, covering 408/429/5xx), so a custom retry loop in
   per distinct lookup and merges the results under a mutex.
 * Terminal output is asserted on the bytes written, so wrapping, alignment and
   the absence of escape sequences in non-interactive output are all testable.
+* **The CLI is tested through its real entry point.** `cmd/shiphoist` builds the
+  actual `cobra` command and drives it via `SetArgs`, with `deps` supplying
+  buffers and stubs. Commands return errors rather than calling `os.Exit`, so
+  `main` holds the only exit in the program and every branch below it is
+  reachable from a test. A dedicated test asserts the command stays silent on
+  failure, so a passing suite also proves nothing is written straight to the
+  process.
+* **The interactive form is tested for real, without a terminal.** `huh` in
+  accessible mode (`WithAccessible` + `WithInput` + `WithOutput`) renders a
+  numbered list and reads line input, so a blank line confirms whatever
+  shiphoist preselected. That is the only assertion made: it covers the
+  pre-selection policy, the grouping and the drill-down, while deliberately
+  *not* covering interactive toggling, which is `huh`'s behaviour rather than
+  shiphoist's.

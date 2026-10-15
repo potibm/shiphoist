@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/potibm/shiphoist/internal/core"
@@ -322,4 +323,135 @@ func TestComposeDiscoverer_Discover_NonComposeFile(t *testing.T) {
 	if len(updates) != 0 {
 		t.Errorf("expected no updates, got %+v", updates)
 	}
+}
+
+func TestComposeDiscoverer_HonoursIgnoreDirective(t *testing.T) {
+	content := `services:
+  web:
+    image: nginx:1.25.0
+  db:
+    image: postgres:16.2 # shiphoist-ignore
+  cache:
+    image: redis:7.2 # shiphoist-ignore: pinned by policy
+  pinned:
+    image: ghcr.io/acme/thing:1.0@sha256:abc # keep this one
+`
+
+	compose := &ComposeDiscoverer{}
+
+	updates, err := compose.Discover(context.Background(), writeTempFile(t, "docker-compose.yml", content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := services(t, updates)
+	if !reflect.DeepEqual(got, []string{"web", "pinned"}) {
+		t.Errorf("expected only web and pinned, got %v", got)
+	}
+
+	filtered := compose.Filtered()
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 filtered references, got %+v", filtered)
+	}
+
+	if filtered[0].Image != "postgres" || filtered[1].Image != "redis" {
+		t.Errorf("expected postgres and redis, got %+v", filtered)
+	}
+
+	for _, f := range filtered {
+		if f.Reason != ReasonIgnoreDirective {
+			t.Errorf("expected reason %q, got %q", ReasonIgnoreDirective, f.Reason)
+		}
+	}
+
+	// The line number lets a report point at what to edit.
+	if filtered[0].LineNumber != 5 {
+		t.Errorf("expected line 5, got %d", filtered[0].LineNumber)
+	}
+}
+
+// The directive is per-reference: one service in a file may opt out while the
+// rest are still updated.
+func TestComposeDiscoverer_IgnoreDirectiveIsPerReference(t *testing.T) {
+	content := `services:
+  a:
+    image: nginx:1.25.0 # shiphoist-ignore
+  b:
+    image: nginx:1.25.0
+`
+
+	updates := discover(t, content)
+
+	if len(updates) != 1 {
+		t.Fatalf("expected 1 update, got %d", len(updates))
+	}
+
+	if updates[0].ServiceName != "b" {
+		t.Errorf("expected service b, got %q", updates[0].ServiceName)
+	}
+
+	// The surviving update still points at its own line, so patching is
+	// unaffected by the skip.
+	if updates[0].LineNumber != 5 {
+		t.Errorf("expected line 5, got %d", updates[0].LineNumber)
+	}
+}
+
+// A comment that merely mentions the word is not a directive.
+func TestComposeDiscoverer_UnrelatedCommentsAreKept(t *testing.T) {
+	content := `services:
+  web:
+    image: nginx:1.25.0 # TODO shiphoist-ignore this later
+`
+
+	if got := services(t, discover(t, content)); !reflect.DeepEqual(got, []string{"web"}) {
+		t.Errorf("expected web to be kept, got %v", got)
+	}
+}
+
+// Filtering is per run, so reusing a discoverer cannot leak a previous run's
+// skips into the next one.
+func TestComposeDiscoverer_FilteredResetsBetweenRuns(t *testing.T) {
+	ignored := `services:
+  db:
+    image: postgres:16.2 # shiphoist-ignore
+`
+	kept := `services:
+  db:
+    image: postgres:16.2
+`
+
+	compose := &ComposeDiscoverer{}
+
+	if _, err := compose.Discover(context.Background(), writeTempFile(t, "a.yml", ignored)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := compose.Discover(context.Background(), writeTempFile(t, "b.yml", kept)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := compose.Filtered(); len(got) != 0 {
+		t.Errorf("expected no filters on the second run, got %+v", got)
+	}
+}
+
+func TestComposeDiscoverer_FilteredOnAFreshDiscoverer(t *testing.T) {
+	// Filtered is called by the caller after Discover, and must be safe to read
+	// on a discoverer that never ran.
+	if got := (&ComposeDiscoverer{}).Filtered(); len(got) != 0 {
+		t.Errorf("expected no filters, got %+v", got)
+	}
+}
+
+// services lists the service names of the given updates, in order.
+func services(t *testing.T, updates []core.ImageUpdate) []string {
+	t.Helper()
+
+	names := make([]string, 0, len(updates))
+	for _, u := range updates {
+		names = append(names, u.ServiceName)
+	}
+
+	return names
 }
