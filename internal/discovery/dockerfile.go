@@ -87,13 +87,13 @@ func (d *DockerfileDiscoverer) fromLine(
 	}
 
 	if isVariableReference(statement.Image) {
-		d.record(statement.Image, lineNumber, ReasonVariableReference)
+		d.record(filePath, statement.Image, lineNumber, ReasonVariableReference)
 
 		return core.ImageUpdate{}, false
 	}
 
 	if isReservedBase(statement.Image) {
-		d.record(statement.Image, lineNumber, ReasonReservedBase)
+		d.record(filePath, statement.Image, lineNumber, ReasonReservedBase)
 
 		return core.ImageUpdate{}, false
 	}
@@ -113,8 +113,9 @@ func (d *DockerfileDiscoverer) fromLine(
 
 // record notes a reference the run deliberately skipped, so it is reported
 // rather than silently dropped.
-func (d *DockerfileDiscoverer) record(image string, lineNumber int, reason string) {
+func (d *DockerfileDiscoverer) record(filePath, image string, lineNumber int, reason string) {
 	d.filtered = append(d.filtered, core.Filtered{
+		FilePath:   filePath,
 		Image:      image,
 		LineNumber: lineNumber,
 		Reason:     reason,
@@ -143,13 +144,17 @@ func readLines(file *os.File) ([]string, error) {
 	return lines, scanner.Err()
 }
 
-// isDockerfileName reports whether a path names a Dockerfile rather than a
+// IsDockerfileName reports whether a path names a Dockerfile rather than a
 // Compose file.
 //
 // `Dockerfile`, `Dockerfile.prod` and `app.Dockerfile` are all Dockerfiles. The
 // Compose files in the wild are lowercase and carry a `.yml` extension, so
 // there is no realistic collision.
-func isDockerfileName(path string) bool {
+//
+// It is exported because the CLI has to recognise the same names when it walks
+// a directory: deciding which files to process and reading them are the same
+// question, and two answers to it would drift apart.
+func IsDockerfileName(path string) bool {
 	name := path
 	if idx := strings.LastIndexAny(name, `/\`); idx >= 0 {
 		name = name[idx+1:]

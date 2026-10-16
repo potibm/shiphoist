@@ -6,21 +6,42 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"strings"
 
 	"github.com/potibm/shiphoist/internal/core"
 	"github.com/potibm/shiphoist/internal/engine"
 	"github.com/potibm/shiphoist/internal/patcher"
 )
 
+// errNoFiles is returned when a run with no arguments finds nothing in the
+// current directory.
+//
+// A bare `shiphoist` in an empty directory is a mistake, not a no-op: exiting
+// zero over no files at all would leave a CI job green after doing nothing.
+var errNoFiles = errors.New("no compose file found")
+
 // errNoTerminal is returned when the run needs a human and has nowhere to ask.
 var errNoTerminal = errors.New("no terminal to prompt on")
 
-// runUpdate runs the full pipeline over filePath and applies the selected
-// updates. It returns an error rather than exiting, leaving the process outcome
-// to the caller.
-func runUpdate(d deps, opts options, filePath string) error {
+// runUpdate runs the full pipeline over the given files and applies the
+// selected updates. It returns an error rather than exiting, leaving the
+// process outcome to the caller.
+//
+// The files are processed as one run: every reference is discovered, asked about
+// once, and written back to its own file.
+func runUpdate(d deps, opts options, paths ...string) error {
 	if err := assertFlagCombination(opts); err != nil {
 		return err
+	}
+
+	resolved, err := resolvePaths(slices.Concat(opts.Files, paths), opts.Suffixes)
+	if err != nil {
+		return err
+	}
+
+	if len(resolved) == 0 {
+		return fmt.Errorf("%w: no docker-compose.yml in the current directory", errNoFiles)
 	}
 
 	maxUpdate, err := opts.maxUpdate()
@@ -28,7 +49,7 @@ func runUpdate(d deps, opts options, filePath string) error {
 		return err
 	}
 
-	discoverer, err := buildDiscoverer(opts, filePath)
+	discoverers, err := buildDiscoverer(opts)
 	if err != nil {
 		return err
 	}
@@ -48,29 +69,29 @@ func runUpdate(d deps, opts options, filePath string) error {
 	human := humanOut(d, opts)
 
 	pipeline := &engine.Pipeline{
-		Discoverer: discoverer,
-		Fetcher:    activeFetcher,
-		Patcher:    &patcher.FilePatcher{},
-		Prompter:   buildPrompter(d, opts, maxUpdate),
-		Out:        human,
-		Verbose:    opts.Verbose,
-		DryRun:     opts.DryRun,
-		Quiet:      opts.Quiet,
+		DiscovererFor: discoverers.discovererFor,
+		Fetcher:       activeFetcher,
+		Patcher:       &patcher.FilePatcher{},
+		Prompter:      buildPrompter(d, opts, maxUpdate),
+		Out:           human,
+		Verbose:       opts.Verbose,
+		DryRun:        opts.DryRun,
+		Quiet:         opts.Quiet,
 	}
 
 	if !opts.Quiet {
-		printBanner(human, opts, filePath)
+		printBanner(human, opts, resolved)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	report, err := pipeline.ProcessFile(ctx, filePath)
+	report, err := pipeline.ProcessFiles(ctx, resolved)
 	if err != nil {
 		return err
 	}
 
-	report.Filtered = filteredFrom(discoverer)
+	report.Filtered = discoverers.Filtered()
 
 	if opts.JSON {
 		if err := writeReportJSON(d.Out, report); err != nil {
@@ -103,12 +124,22 @@ func printFiltered(w io.Writer, report *core.Report) {
 
 // printBanner introduces the run. It is pure chrome, so --quiet drops it along
 // with the progress reporter's own output.
-func printBanner(w io.Writer, opts options, filePath string) {
+//
+// One file is named, several are counted: a list long enough to need this much
+// room would push the useful part of the line off screen.
+func printBanner(w io.Writer, opts options, files []string) {
 	if opts.ForceRefresh {
 		fmt.Fprintln(w, "🔄 Force refresh activated - bypassing cache...")
 	}
 
-	fmt.Fprintf(w, "🚢 Hoisting sails for %s...\n", filePath)
+	switch len(files) {
+	case 0:
+		return
+	case 1:
+		fmt.Fprintf(w, "🚢 Hoisting sails for %s...\n", files[0])
+	default:
+		fmt.Fprintf(w, "🚢 Hoisting sails for %d files: %s...\n", len(files), strings.Join(files, ", "))
+	}
 }
 
 // writeReportJSON writes the report as the single document on w.

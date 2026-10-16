@@ -17,7 +17,12 @@ import (
 	"github.com/potibm/shiphoist/internal/ui"
 )
 
-const testFilePath = "docker-compose.yml"
+const (
+	testFilePath   = "docker-compose.yml"
+	brokenFilePath = "broken-compose.yml"
+	secondFilePath = "docker-compose.dev.yml"
+	firstFilePath  = "docker-compose.prod.yml"
+)
 
 var errRegistry = errors.New("registry unavailable")
 
@@ -118,11 +123,32 @@ func (p *stubPatcher) Patch(ctx context.Context, filePath string, updates []core
 	return nil
 }
 
+// testUpdates returns three references in the primary file.
 func testUpdates() []core.ImageUpdate {
 	return []core.ImageUpdate{
 		{FilePath: testFilePath, LineNumber: 4, ServiceName: "web", ImageName: "nginx", OldTag: "1.25.0"},
 		{FilePath: testFilePath, LineNumber: 8, ServiceName: "db", ImageName: "postgres", OldTag: "16"},
 		{FilePath: testFilePath, LineNumber: 12, ServiceName: "cache", ImageName: "redis", OldTag: "7.2"},
+	}
+}
+
+// twoFileUpdates returns references spread over two files, with one repository
+// shared between them.
+func twoFileUpdates() []core.ImageUpdate {
+	return []core.ImageUpdate{
+		{FilePath: testFilePath, LineNumber: 4, ServiceName: "web", ImageName: "nginx", OldTag: "1.25.0"},
+		{FilePath: testFilePath, LineNumber: 8, ServiceName: "db", ImageName: "postgres", OldTag: "16"},
+		{FilePath: secondFilePath, LineNumber: 3, ServiceName: "api", ImageName: "nginx", OldTag: "1.25.0"},
+		{FilePath: secondFilePath, LineNumber: 6, ServiceName: "jobs", ImageName: "redis", OldTag: "7.2"},
+	}
+}
+
+// perFileDiscoverer hands out a discoverer whose references depend on the path
+// it is given, which is what a real run relies on when the files differ in
+// format.
+func perFileDiscoverer(updatesByFile map[string][]core.ImageUpdate) func(string) core.Discoverer {
+	return func(filePath string) core.Discoverer {
+		return &stubDiscoverer{updates: updatesByFile[filePath]}
 	}
 }
 
@@ -138,11 +164,11 @@ func newTestPipeline(
 	out := &bytes.Buffer{}
 
 	return &Pipeline{
-		Discoverer: discoverer,
-		Fetcher:    fetcher,
-		Prompter:   prompter,
-		Patcher:    patcher,
-		Out:        out,
+		DiscovererFor: fixedDiscoverer(discoverer),
+		Fetcher:       fetcher,
+		Prompter:      prompter,
+		Patcher:       patcher,
+		Out:           out,
 	}, out
 }
 
@@ -160,6 +186,15 @@ func newVerboseTestPipeline(
 
 // runProcess runs the pipeline and returns the report, failing the test on an
 // unexpected error. Tests about the error path call ProcessFile directly.
+// fixedDiscoverer adapts one discoverer to the factory the pipeline expects.
+//
+// Most questions about the pipeline are asked over a single file, so the factory
+// is a stand-in that hands out the same stub whatever path it is given. The
+// tests that care about several files build their own.
+func fixedDiscoverer(discoverer core.Discoverer) func(string) core.Discoverer {
+	return func(string) core.Discoverer { return discoverer }
+}
+
 func runProcess(t *testing.T, pipeline *Pipeline) *core.Report {
 	t.Helper()
 
@@ -213,30 +248,305 @@ func TestProcessFile_ProgressIsReportedForEveryImage(t *testing.T) {
 	}
 }
 
-func TestProcessFile_DiscoveryErrorAborts(t *testing.T) {
-	discoverer := &stubDiscoverer{err: errors.New("invalid yaml")}
+func TestProcessFiles_UnreadableFileDoesNotStopTheOthers(t *testing.T) {
+	readable := &stubDiscoverer{updates: testUpdates()}
+	fetcher := &stubFetcher{}
+	patcher := &stubPatcher{}
+
+	pipeline, _ := newTestPipeline(readable, fetcher, &stubPrompter{}, patcher)
+	pipeline.DiscovererFor = func(filePath string) core.Discoverer {
+		if filePath == brokenFilePath {
+			return &stubDiscoverer{err: errors.New("invalid yaml")}
+		}
+
+		return readable
+	}
+
+	report, err := pipeline.ProcessFiles(context.Background(), []string{brokenFilePath, testFilePath})
+	if err != nil {
+		t.Fatalf("expected the readable file to still be processed, got %v", err)
+	}
+
+	// The unreadable file is reported rather than raised, matching how a single
+	// unreachable registry is handled: a stack with one stale file should still
+	// get its other files updated.
+	if len(report.Failures) != 1 {
+		t.Fatalf("expected 1 failure, got %+v", report.Failures)
+	}
+
+	if !strings.Contains(report.Failures[0].Message, "discovery phase failed") {
+		t.Errorf("expected a discovery-phase failure, got %q", report.Failures[0].Message)
+	}
+
+	if report.Failures[0].Image != brokenFilePath {
+		t.Errorf("expected the failure to name the file, got %q", report.Failures[0].Image)
+	}
+
+	if len(report.Updates) != 3 {
+		t.Errorf("expected the other file's 3 updates, got %d", len(report.Updates))
+	}
+}
+
+// With nothing readable the run still succeeds and writes nothing, so a caller
+// can tell "everything is up to date" from "nothing could be checked".
+func TestProcessFiles_AllUnreadableReportsNoUpdates(t *testing.T) {
+	broken := &stubDiscoverer{err: errors.New("invalid yaml")}
+	fetcher := &stubFetcher{}
+	patcher := &stubPatcher{}
+
+	pipeline, _ := newTestPipeline(broken, fetcher, &stubPrompter{}, patcher)
+
+	report, err := pipeline.ProcessFiles(context.Background(), []string{brokenFilePath})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(report.Failures) != 1 {
+		t.Errorf("expected 1 failure, got %+v", report.Failures)
+	}
+
+	if len(report.Updates) != 0 {
+		t.Errorf("expected no updates, got %d", len(report.Updates))
+	}
+
+	if report.Written {
+		t.Error("expected nothing to be written")
+	}
+
+	if patcher.calls.Load() != 0 {
+		t.Error("expected no patching when nothing was readable")
+	}
+}
+
+// A reference shared by two files is one registry lookup, not two. The grouping
+// keys on the reference rather than on the declaration site, so the same
+// image:tag in a Compose file and a Dockerfile costs one round-trip.
+func TestProcessFiles_DeduplicatesAcrossFiles(t *testing.T) {
+	updates := twoFileUpdates()
+	fetcher := &stubFetcher{}
+	patcher := &stubPatcher{}
+
+	pipeline, out := newTestPipeline(nil, fetcher, &stubPrompter{}, patcher)
+	pipeline.DiscovererFor = perFileDiscoverer(map[string][]core.ImageUpdate{
+		testFilePath:   updates[:2],
+		secondFilePath: updates[2:],
+	})
+
+	report, err := pipeline.ProcessFiles(context.Background(), []string{testFilePath, secondFilePath})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// nginx appears in both files, so three lookups cover four references.
+	if report.Checked != 3 {
+		t.Errorf("expected 3 lookups, got %d", report.Checked)
+	}
+
+	if report.References != 4 {
+		t.Errorf("expected 4 references, got %d", report.References)
+	}
+
+	if fetcher.calls.Load() != 3 {
+		t.Errorf("expected 3 registry calls, got %d", fetcher.calls.Load())
+	}
+
+	// The summary states the dedup, so a grouped run is not mistaken for a
+	// truncated one.
+	if !strings.Contains(out.String(), "3 unique images (4 references)") {
+		t.Errorf("expected the shared lookup to be spelled out, got:\n%s", out.String())
+	}
+}
+
+// Every reference the shared lookup covered is updated, each at its own line in
+// its own file. Returning the representative alone would rewrite the first
+// declaration twice and leave the second file untouched.
+func TestProcessFiles_SharedFetchFansOutToEveryFile(t *testing.T) {
+	updates := twoFileUpdates()
+	fetcher := &stubFetcher{}
+	patcher := &stubPatcher{}
+
+	pipeline, _ := newTestPipeline(nil, fetcher, &stubPrompter{}, patcher)
+	pipeline.DiscovererFor = perFileDiscoverer(map[string][]core.ImageUpdate{
+		testFilePath:   updates[:2],
+		secondFilePath: updates[2:],
+	})
+
+	report, err := pipeline.ProcessFiles(context.Background(), []string{testFilePath, secondFilePath})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(report.Updates) != 4 {
+		t.Fatalf("expected 4 updates, got %d", len(report.Updates))
+	}
+
+	if !report.Written {
+		t.Error("expected the run to report a write")
+	}
+
+	if patcher.calls.Load() != 2 {
+		t.Errorf("expected one write per file, got %d", patcher.calls.Load())
+	}
+}
+
+// One selection for the whole run, not one per file. Asking twice would make a
+// multi-file run confirm the same shared reference more than once.
+func TestProcessFiles_PromptsOnceForTheWholeRun(t *testing.T) {
+	updates := twoFileUpdates()
 	fetcher := &stubFetcher{}
 	prompter := &stubPrompter{}
 	patcher := &stubPatcher{}
 
-	pipeline, _ := newTestPipeline(discoverer, fetcher, prompter, patcher)
+	pipeline, _ := newTestPipeline(nil, fetcher, prompter, patcher)
+	pipeline.DiscovererFor = perFileDiscoverer(map[string][]core.ImageUpdate{
+		testFilePath:   updates[:2],
+		secondFilePath: updates[2:],
+	})
 
-	_, err := pipeline.ProcessFile(context.Background(), testFilePath)
-	if err == nil {
-		t.Fatal("expected an error")
+	if _, err := pipeline.ProcessFiles(context.Background(), []string{testFilePath, secondFilePath}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(err.Error(), "discovery phase failed") {
-		t.Errorf("expected a discovery-phase error, got %v", err)
+	if prompter.calls.Load() != 1 {
+		t.Errorf("expected exactly one selection, got %d", prompter.calls.Load())
+	}
+}
+
+// Each file is written with only its own updates. The patcher addresses lines by
+// number within one file, so handing it the whole run would have it look up one
+// file's line numbers in another.
+func TestProcessFiles_PatchesEachFileWithItsOwnUpdates(t *testing.T) {
+	updates := twoFileUpdates()
+	fetcher := &stubFetcher{}
+	patcher := &stubPatcher{}
+
+	pipeline, _ := newTestPipeline(nil, fetcher, &stubPrompter{}, patcher)
+	pipeline.DiscovererFor = perFileDiscoverer(map[string][]core.ImageUpdate{
+		testFilePath:   updates[:2],
+		secondFilePath: updates[2:],
+	})
+
+	if _, err := pipeline.ProcessFiles(context.Background(), []string{testFilePath, secondFilePath}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if fetcher.calls.Load() != 0 {
-		t.Errorf("expected no fetches after a discovery failure, got %d", fetcher.calls.Load())
+	if len(patcher.applied) != 4 {
+		t.Fatalf("expected 4 applied updates, got %d", len(patcher.applied))
+	}
+
+	for _, applied := range patcher.applied {
+		// Every update carries the file it came from, so a mistake here would
+		// show up as an update pointing at the wrong file.
+		if applied.FilePath == "" {
+			t.Error("expected every update to name its file")
+		}
+	}
+
+	if !containsLine(patcher.applied, 4) {
+		t.Error("expected the first file's line 4 to be patched")
+	}
+
+	if !containsLine(patcher.applied, 3) {
+		t.Error("expected the second file's line 3 to be patched")
+	}
+}
+
+// The report lists the files in command-line order, so a consumer can tell what
+// a run covered without reading the updates.
+func TestProcessFiles_ReportListsEveryFile(t *testing.T) {
+	updates := twoFileUpdates()
+	fetcher := &stubFetcher{}
+	patcher := &stubPatcher{}
+
+	pipeline, _ := newTestPipeline(nil, fetcher, &stubPrompter{}, patcher)
+	pipeline.DiscovererFor = perFileDiscoverer(map[string][]core.ImageUpdate{
+		testFilePath:   updates[:2],
+		secondFilePath: updates[2:],
+	})
+
+	report, err := pipeline.ProcessFiles(context.Background(), []string{firstFilePath, testFilePath, secondFilePath})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !slices.Equal(report.Files, []string{firstFilePath, testFilePath, secondFilePath}) {
+		t.Errorf("expected the files in command-line order, got %v", report.Files)
+	}
+}
+
+// A file with nothing in it is not written, so an unchanged file keeps its
+// mtime and permissions rather than being rewritten identically.
+func TestProcessFiles_FileWithoutUpdatesIsNotWritten(t *testing.T) {
+	updates := testUpdates()
+	fetcher := &stubFetcher{}
+	patcher := &stubPatcher{}
+
+	pipeline, _ := newTestPipeline(nil, fetcher, &stubPrompter{}, patcher)
+	pipeline.DiscovererFor = perFileDiscoverer(map[string][]core.ImageUpdate{
+		testFilePath:   updates,
+		secondFilePath: nil,
+	})
+
+	report, err := pipeline.ProcessFiles(context.Background(), []string{testFilePath, secondFilePath})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if patcher.calls.Load() != 1 {
+		t.Errorf("expected exactly one file to be written, got %d", patcher.calls.Load())
+	}
+
+	if report.References != 3 {
+		t.Errorf("expected 3 references, got %d", report.References)
+	}
+}
+
+func TestProcessFiles_NoPaths(t *testing.T) {
+	fetcher := &stubFetcher{}
+	patcher := &stubPatcher{}
+
+	pipeline, _ := newTestPipeline(&stubDiscoverer{}, fetcher, &stubPrompter{}, patcher)
+
+	report, err := pipeline.ProcessFiles(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(report.Updates) != 0 || report.Written || len(report.Files) != 0 {
+		t.Errorf("expected an empty report, got %+v", report)
+	}
+}
+
+// The pipeline needs a discoverer per file, and a nil factory is a wiring
+// mistake rather than a run that covers nothing.
+func TestProcessFiles_WithoutADiscovererReportsEveryFile(t *testing.T) {
+	fetcher := &stubFetcher{}
+	patcher := &stubPatcher{}
+
+	pipeline := &Pipeline{Fetcher: fetcher, Patcher: patcher, Out: &bytes.Buffer{}}
+
+	report, err := pipeline.ProcessFiles(context.Background(), []string{testFilePath})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(report.Failures) != 1 {
+		t.Errorf("expected the file to be reported as failed, got %+v", report.Failures)
 	}
 
 	if patcher.calls.Load() != 0 {
-		t.Error("expected no patching after a discovery failure")
+		t.Error("expected nothing to be written")
 	}
+}
+
+func containsLine(updates []core.ImageUpdate, line int) bool {
+	for _, u := range updates {
+		if u.LineNumber == line {
+			return true
+		}
+	}
+
+	return false
 }
 
 func TestProcessFile_NoImagesDiscovered(t *testing.T) {
@@ -425,10 +735,10 @@ func TestProcessFile_NilPrompterAppliesEverything(t *testing.T) {
 	patcher := &stubPatcher{}
 
 	pipeline := &Pipeline{
-		Discoverer: discoverer,
-		Fetcher:    fetcher,
-		Patcher:    patcher,
-		Out:        &bytes.Buffer{},
+		DiscovererFor: fixedDiscoverer(discoverer),
+		Fetcher:       fetcher,
+		Patcher:       patcher,
+		Out:           &bytes.Buffer{},
 	}
 
 	got := runProcess(t, pipeline).Updates
@@ -549,8 +859,8 @@ func TestProcessFile_ReportDescribesTheRun(t *testing.T) {
 
 	report := runProcess(t, pipeline)
 
-	if report.File != testFilePath {
-		t.Errorf("expected the file to be recorded, got %q", report.File)
+	if !slices.Equal(report.Files, []string{testFilePath}) {
+		t.Errorf("expected the file to be recorded, got %v", report.Files)
 	}
 
 	if report.References != 3 {

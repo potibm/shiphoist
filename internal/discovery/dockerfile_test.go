@@ -301,8 +301,8 @@ func TestIsDockerfileName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			if got := isDockerfileName(tt.path); got != tt.want {
-				t.Errorf("isDockerfileName(%q) = %v, want %v", tt.path, got, tt.want)
+			if got := IsDockerfileName(tt.path); got != tt.want {
+				t.Errorf("IsDockerfileName(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
 	}

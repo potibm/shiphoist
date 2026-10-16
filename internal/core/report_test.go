@@ -8,7 +8,7 @@ import (
 
 func TestReport_SerialisesWithFullDetail(t *testing.T) {
 	report := Report{
-		File:       "docker-compose.yml",
+		Files:      []string{"docker-compose.yml"},
 		Checked:    2,
 		References: 3,
 		ElapsedMS:  4210,
@@ -28,7 +28,12 @@ func TestReport_SerialisesWithFullDetail(t *testing.T) {
 			MajorTag:       "17.0.0",
 		}},
 		Failures: []Failure{{Image: "[web] nginx", Message: "unauthorized"}},
-		Filtered: []Filtered{{Image: "postgres", LineNumber: 4, Reason: "ignore-directive"}},
+		Filtered: []Filtered{{
+			FilePath:   "docker-compose.yml",
+			Image:      "postgres",
+			LineNumber: 4,
+			Reason:     "ignore-directive",
+		}},
 	}
 
 	encoded, err := json.Marshal(report)
@@ -41,7 +46,7 @@ func TestReport_SerialisesWithFullDetail(t *testing.T) {
 	// The keys are a public contract for CI consumers, so they are asserted
 	// rather than left to whatever the struct happens to be called.
 	for _, want := range []string{
-		`"file":"docker-compose.yml"`,
+		`"files":["docker-compose.yml"]`,
 		`"checked":2`,
 		`"references":3`,
 		`"elapsed_ms":4210`,
@@ -59,7 +64,7 @@ func TestReport_SerialisesWithFullDetail(t *testing.T) {
 		`"no_compatible_tags":false`,
 		`"image":"[web] nginx"`,
 		`"message":"unauthorized"`,
-		`"filtered":[{"image":"postgres","line_number":4,"reason":"ignore-directive"}]`,
+		`"filtered":[{"file_path":"docker-compose.yml","image":"postgres","line_number":4,"reason":"ignore-directive"}]`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %s in:\n%s", want, out)
@@ -77,7 +82,7 @@ func TestReport_EmptySlicesSerialiseAsArrays(t *testing.T) {
 
 	out := string(encoded)
 
-	for _, want := range []string{`"updates":[]`, `"failures":[]`, `"filtered":[]`} {
+	for _, want := range []string{`"files":[]`, `"updates":[]`, `"failures":[]`, `"filtered":[]`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %s in:\n%s", want, out)
 		}

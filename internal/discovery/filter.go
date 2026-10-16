@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/potibm/shiphoist/internal/core"
 )
@@ -45,6 +46,7 @@ func (d *ExcludeDiscoverer) Discover(ctx context.Context, filePath string) ([]co
 	for _, u := range updates {
 		if d.Pattern.MatchString(u.ImageName) {
 			d.excluded = append(d.excluded, core.Filtered{
+				FilePath:   u.FilePath,
 				Image:      u.ImageName,
 				LineNumber: u.LineNumber,
 				Reason:     ReasonExcluded,
@@ -73,6 +75,10 @@ func (d *ExcludeDiscoverer) Filtered() []core.Filtered {
 
 	all = append(all, d.excluded...)
 	slices.SortStableFunc(all, func(a, b core.Filtered) int {
+		if a.FilePath != b.FilePath {
+			return strings.Compare(a.FilePath, b.FilePath)
+		}
+
 		return a.LineNumber - b.LineNumber
 	})
 

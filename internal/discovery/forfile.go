@@ -11,7 +11,7 @@ import (
 // `shiphoist docker-compose.yml`. Anything that is not recognisably a Dockerfile
 // is treated as Compose, which is what the overwhelming majority of files are.
 func ForFile(path string) core.Discoverer {
-	if isDockerfileName(path) {
+	if IsDockerfileName(path) {
 		return &DockerfileDiscoverer{}
 	}
 

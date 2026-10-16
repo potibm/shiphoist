@@ -101,7 +101,7 @@ func (c *ComposeDiscoverer) extractImagesFromMapping(
 				continue
 			}
 
-			if c.isIgnored(prop.Value, lines) {
+			if c.isIgnored(prop.Value, filePath, lines) {
 				continue
 			}
 
@@ -112,7 +112,7 @@ func (c *ComposeDiscoverer) extractImagesFromMapping(
 
 // isIgnored reports whether the reference at node carries the inline directive,
 // recording the skip when it does.
-func (c *ComposeDiscoverer) isIgnored(node ast.Node, lines []string) bool {
+func (c *ComposeDiscoverer) isIgnored(node ast.Node, filePath string, lines []string) bool {
 	token := node.GetToken()
 	if token == nil {
 		return false
@@ -132,6 +132,7 @@ func (c *ComposeDiscoverer) isIgnored(node ast.Node, lines []string) bool {
 	imageName, _, _ := ParseImageReference(token.Value)
 
 	c.filtered = append(c.filtered, core.Filtered{
+		FilePath:   filePath,
 		Image:      imageName,
 		LineNumber: token.Position.Line,
 		Reason:     ReasonIgnoreDirective,

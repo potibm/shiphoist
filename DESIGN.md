@@ -137,6 +137,9 @@ To avoid the weaknesses of pure AST parsers (destroy formatting/comments) and du
 2. **Patching Phase (Regex/Line-Scanner):**
    The file is read as raw text. A patcher jumps precisely to the determined line number and performs the regex replacement of the tag *only there*.
 
+A run covers one file or many, and the phases span the whole run rather than
+repeating per file — see *One Run, Many Files* below.
+
 ---
 
 ## 🔍 Version Discovery & SemVer Logic
@@ -245,7 +248,7 @@ degrades to just the image name when the source format has no named service.
 
 ## The Run Report
 
-`Pipeline.ProcessFile` returns a `core.Report` rather than a bare slice of
+`Pipeline.ProcessFiles` returns a `core.Report` rather than a bare slice of
 updates. A slice cannot express the outcomes a caller legitimately needs to act
 on: an image that could not be checked, a run that checked fewer images than it
 found references because they deduplicated, or a run that resolved everything
@@ -253,7 +256,7 @@ but wrote nothing.
 
 ```go
 type Report struct {
-    File       string        `json:"file"`
+    Files      []string      `json:"files"`       // in command-line order
     Updates    []ImageUpdate `json:"updates"`
     Failures   []Failure     `json:"failures"`
     Checked    int           `json:"checked"`     // distinct registry lookups
@@ -264,13 +267,23 @@ type Report struct {
 }
 ```
 
+The report covers a whole *run*, not one file. `Files` replaced a single `File`
+when the CLI learned to take several paths: a report that named one file could
+not say which of them a `Failures` entry belonged to, and the alternative — one
+report per file — would have split every aggregate the report exists to carry.
+A single file therefore arrives as `files: [that one]`, which is a superset of
+what `file` used to say.
+
 Two decisions are load-bearing:
 
 * **A failure is not an error.** A registry that 401s on one image is reported
-  in `Failures` and skipped, and the run still patches everything else. An
-  `error` return means the *run* could not complete — bad YAML, an unwritable
-  file, a cancelled context — and then no report is returned at all. This keeps
-  "some images failed" separable from "shiphoist did not run".
+  in `Failures` and skipped, and the run still patches everything else. A file
+  that cannot be read at all is reported the same way, filed under its path, so
+  one stale file does not cost the run every file that was readable. An
+  `error` return means the *run* could not complete — a cancelled context, an
+  unwritable file, a rejected flag combination — and then no report is returned
+  at all. This keeps "some things failed" separable from "shiphoist did not
+  run".
 * **`Written` and `DryRun` are separate.** A dry run that resolved three updates
   reports `dry_run: true, written: false`; a run where the user deselected
   everything reports `dry_run: false, written: false`. A single boolean could not
@@ -296,6 +309,20 @@ import "context"
 type Discoverer interface {
 	Discover(ctx context.Context, filePath string) ([]ImageUpdate, error)
 }
+```
+
+The `Pipeline` holds a **factory** rather than a `Discoverer`:
+
+```go
+DiscovererFor func(filePath string) core.Discoverer
+```
+
+A single discoverer could serve at most one format, and a run covers several
+files in several formats: `shiphoist docker-compose.yml Dockerfile` needs both
+discoverers in one invocation. The format follows from the file name, so the
+factory is the only place that knows which is which. The CLI supplies it and
+keeps the discoverers it handed out, which is what lets it report what they
+filtered afterwards.
 
 // 2. REGISTRY: Compares SemVer and fetches SHA256 digests
 type RegistryFetcher interface {
@@ -345,9 +372,83 @@ duplicate to the first service's line.
 The run summary reports both counts, so a deduplicated run is never mistaken for
 a truncated one: `✅ Checked 18 unique images (25 references) in 4.2s`.
 
+The key is built from the reference alone, never from `FilePath` or
+`LineNumber`, so deduplication is *across files* for free: the same
+`nginx:1.24.0` in a Compose file and in a Dockerfile is one lookup and two
+patches. Nothing in the grouping had to change to support that — only the caller
+that feeds it more than one file.
+
 The TUI applies the mirror-image idea: identical *results* share a row marked
 `×8`, and selecting one opens a second prompt to narrow which services apply.
 Grouping a result is safe precisely because the fan-out keeps members distinct.
+
+## One Run, Many Files
+
+`ProcessFiles` runs five phases that each span the whole run, instead of
+repeating the old single-file pipeline per file:
+
+1. **Discover** every file, via `DiscovererFor`, appending references and
+   counting them.
+2. **Group** the whole set, which deduplicates across files for free.
+3. **Fetch** and **prompt once**, so a shared reference is confirmed once rather
+   than once per file.
+4. **Patch by file**, handing each file only its own updates.
+
+Phase 4 is the one that needs care. `core.Patcher` addresses lines by number
+*within one file*, so passing it the updates of the whole run would have it look
+up file A's line numbers in file B. `groupByFile` buckets first, and a file with
+nothing selected is never opened for writing at all, so an unchanged file keeps
+its mtime and permissions.
+
+Phase 1 tolerates a file it cannot read by recording a `Failure` under the path
+rather than returning an `error`. That matches how one unreachable registry is
+handled: a stack with one stale file should still get its other files updated.
+The failure is *appended* to the report rather than assigned, because discovery
+runs before the fetch phase and assigning would drop what it had found.
+
+Resolving the command line into paths is a separate concern and lives in
+`cmd/shiphoist/paths.go`. Each argument may be a literal path, a glob pattern or
+a directory, and they can be mixed. `**` is matched by a segment-at-a-time
+matcher rather than `filepath.Glob`, which implements no recursion: `**` absorbs
+any number of path segments, so `**/docker-compose.yml` finds a compose file at
+any depth. The patterns decide which files are in the run, and `IsDockerfileName`
+decides how to read each one, so the name check is exported from `discovery`
+rather than written twice.
+
+A path that matches nothing is refused rather than skipped. A run that silently
+covers none of the files it was asked about is worse than one that fails,
+because nothing in its output would say so.
+
+### Where the file name matters
+
+A path or a glob the user spelled out is taken as written, so a file can be called
+anything at all. The only place a name is interpreted is a **directory walk**,
+because there the name is how the walk decides what to pick up. `isUpdatableName`
+asks whether a walked file is one shiphoist can read, and answers from the name:
+`IsDockerfileName` for one branch, then a Compose stem plus a `.yml`/`.yaml`
+extension.
+
+The stem and the extension are both checked. Testing the stem alone would pick up
+a shell script called `docker-compose.sh`; testing the extension alone would pick
+up every YAML in the tree.
+
+`--suffix` widens the Compose half for generated files. A template keeps its
+Compose name under a suffix — `docker-compose.yml.j2` is an Ansible template for a
+Compose file, and the reference in it is the one the rendered file would carry.
+`isComposeVariant` strips one suffix and rechecks the stem and extension, rather
+than accepting a suffix once and letting it lift an unrelated stem: without the
+recheck, `--suffix .yaml` would qualify `deployment.j2.yaml`, which has no Compose
+name in it at all.
+
+The Dockerfile half needs no flag because `IsDockerfileName` already matches on a
+prefix, so `Dockerfile.j2` qualifies the way `Dockerfile.prod` does. The Compose
+half is checked by suffix instead, because there the stem sits at the front of the
+name and the extension at the back.
+
+Because the flag names the user's files rather than the walk's, a directory
+holding both `docker-compose.yml` and its `.j2` template is processed as both.
+That is deliberate: `--suffix` is an explicit statement about which files are
+yours.
 
 ## Filtering References
 
@@ -387,7 +488,9 @@ would make `^nginx$` silently match nothing, since the reference is really
 
 `Report.References` counts what discovery *returned*, so a filtered run would
 under-report the file. `Report.Filtered` carries the skipped references with
-their line numbers and reasons, which is what makes "why did CI not update X?"
+their file path, line numbers and reasons, which is what makes "why did CI not
+update X?" answerable — and what lets a multi-file run say *which* file the skip
+came from, since two files can both pin an image at line 12.
 answerable. `Report.References` plus `len(Report.Filtered)` is the file's true
 image count.
 
@@ -518,3 +621,14 @@ backoff with jitter, covering 408/429/5xx), so a custom retry loop in
   pre-selection policy, the grouping and the drill-down, while deliberately
   *not* covering interactive toggling, which is `huh`'s behaviour rather than
   shiphoist's.
+* **Path resolution is tested against a real temporary tree**, not with
+  fabricated strings: directory walks, `**` recursion, the skipped directories,
+  deduplication and the refused empty match all need a filesystem to be honest
+  about. The `**` matcher is additionally table-tested on its own, because
+  `filepath.Match` implements no recursion and the segment loop is where a
+  recursive pattern lives or dies.
+* **Multi-file behaviour is pinned where the invariants are.** One registry call
+  for a reference shared by two files, one selection for the whole run, each file
+  written with only its own updates, an unreadable file not stopping the others,
+  and a file with nothing selected never being opened — each is a separate test,
+  because each is a separate thing that would otherwise break silently.
