@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -28,7 +29,7 @@ func TestResolvePaths_LiteralFiles(t *testing.T) {
 	first := writeFile(t, dir, "a/docker-compose.yml", "")
 	second := writeFile(t, dir, "b/Dockerfile", "")
 
-	got, err := resolvePaths([]string{first, second})
+	got, err := resolvePaths([]string{first, second}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -51,7 +52,7 @@ func TestResolvePaths_DirectoryTakesOnlyKnownNames(t *testing.T) {
 	writeFile(t, dir, "Dockerfileish.yml", "")
 	writeFile(t, dir, "notes.txt", "")
 
-	got, err := resolvePaths([]string{dir})
+	got, err := resolvePaths([]string{dir}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestResolvePaths_RecursiveGlob(t *testing.T) {
 	deep := writeFile(t, dir, "a/b/c/d/docker-compose.yml", "")
 	other := writeFile(t, dir, "a/b/other.yml", "")
 
-	got, err := resolvePaths([]string{filepath.Join(dir, "**", "docker-compose.yml")})
+	got, err := resolvePaths([]string{filepath.Join(dir, "**", "docker-compose.yml")}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,7 +103,7 @@ func TestResolvePaths_SingleSegmentGlob(t *testing.T) {
 	first := writeFile(t, dir, "one/docker-compose.yml", "")
 	second := writeFile(t, dir, "two/docker-compose.yml", "")
 
-	got, err := resolvePaths([]string{filepath.Join(dir, "*", "docker-compose.yml")})
+	got, err := resolvePaths([]string{filepath.Join(dir, "*", "docker-compose.yml")}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestResolvePaths_MixedShapeArguments(t *testing.T) {
 	got, err := resolvePaths([]string{
 		filepath.Join(dir, "**", "docker-compose.yml"),
 		plain,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestResolvePaths_CombinesPositionalAndFileFlag(t *testing.T) {
 	positional := writeFile(t, dir, "one/docker-compose.yml", "")
 	flagged := writeFile(t, dir, "two/Dockerfile", "")
 
-	got, err := resolvePaths([]string{positional, flagged})
+	got, err := resolvePaths([]string{positional, flagged}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -157,7 +158,7 @@ func TestResolvePaths_Deduplicates(t *testing.T) {
 	compose := writeFile(t, dir, "docker-compose.yml", "")
 	other := writeFile(t, dir, "sub/docker-compose.yml", "")
 
-	got, err := resolvePaths([]string{compose, dir, filepath.Join(dir, "*", "docker-compose.yml")})
+	got, err := resolvePaths([]string{compose, dir, filepath.Join(dir, "*", "docker-compose.yml")}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -186,7 +187,7 @@ func TestResolvePaths_RejectsWhatMatchesNothing(t *testing.T) {
 		filepath.Join(dir, "**", "missing.yml"),
 		filepath.Join(dir, "nomatch", "*.yml"),
 	} {
-		if _, err := resolvePaths([]string{arg}); err == nil {
+		if _, err := resolvePaths([]string{arg}, nil); err == nil {
 			t.Errorf("expected %q to be refused", arg)
 		}
 	}
@@ -204,7 +205,7 @@ func TestResolvePaths_SkipsDirectoriesNobodyAskedFor(t *testing.T) {
 	writeFile(t, dir, "dist/docker-compose.yml", "")
 	writeFile(t, dir, ".venv/docker-compose.yml", "")
 
-	got, err := resolvePaths([]string{dir})
+	got, err := resolvePaths([]string{dir}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -229,7 +230,7 @@ func TestResolvePaths_DefaultsToTheCurrentDirectory(t *testing.T) {
 	writeFile(t, dir, "docker-compose.yml", "")
 	writeFile(t, dir, "nested/docker-compose.yml", "")
 
-	got, err := resolvePaths(nil)
+	got, err := resolvePaths(nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -253,7 +254,7 @@ func TestResolvePaths_DefaultWithNothingPresent(t *testing.T) {
 		}
 	})
 
-	got, err := resolvePaths(nil)
+	got, err := resolvePaths(nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -301,8 +302,8 @@ func TestIsUpdatableName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			if got := isUpdatableName(tt.path); got != tt.want {
-				t.Errorf("isUpdatableName(%q) = %v, want %v", tt.path, got, tt.want)
+			if got := isUpdatableName(tt.path, nil); got != tt.want {
+				t.Errorf("isUpdatableName(%q, nil) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
 	}
@@ -380,6 +381,176 @@ func TestHasGlobMagic(t *testing.T) {
 		if got := hasGlobMagic(tt.pattern); got != tt.want {
 			t.Errorf("hasGlobMagic(%q) = %v, want %v", tt.pattern, got, tt.want)
 		}
+	}
+}
+
+// A file named `docker-compose.yml.j2` is an Ansible template for a Compose file,
+// and the reference in it is the one the rendered file would carry. The name
+// under the suffix is therefore still a Compose name, and the suffix is what
+// says so — without it the walk stops at the first extension and never sees the
+// Compose name underneath.
+func TestResolvePaths_DirectoryRecognisesSuffix(t *testing.T) {
+	dir := t.TempDir()
+	template := writeFile(t, dir, "docker-compose.yml.j2", "")
+	plain := writeFile(t, dir, "docker-compose.yml", "")
+
+	// Without the flag the conventional name is the only one recognised.
+	got, err := resolvePaths([]string{dir}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !containsPath(got, plain) {
+		t.Errorf("expected %s, got %v", plain, got)
+	}
+
+	if containsPath(got, template) {
+		t.Errorf("expected %s to be ignored without --suffix, got %v", template, got)
+	}
+
+	got, err = resolvePaths([]string{dir}, []string{".j2"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !containsPath(got, plain) || !containsPath(got, template) {
+		t.Errorf("expected both files, got %v", got)
+	}
+}
+
+// The plain names come first, so a directory holding both reports them in the
+// order a reader expects rather than sorting the template ahead by accident.
+func TestResolvePaths_SuffixCandidateOrderFollowsThePlainNames(t *testing.T) {
+	candidates := defaultCandidates([]string{".j2"})
+
+	if candidates[0] != "docker-compose.yml" {
+		t.Errorf("expected the plain name first, got %v", candidates)
+	}
+
+	if !slices.Contains(candidates, "docker-compose.yml.j2") {
+		t.Errorf("expected the suffixed variant, got %v", candidates)
+	}
+}
+
+// A suffix only widens the Compose side. `Dockerfile.j2` already passes through
+// IsDockerfileName's prefix rule, and a suffix must not change that.
+func TestResolvePaths_SuffixLeavesDockerfileNamesAlone(t *testing.T) {
+	dir := t.TempDir()
+	template := writeFile(t, dir, "Dockerfile.j2", "")
+
+	for _, suffixes := range [][]string{nil, {".j2"}} {
+		got, err := resolvePaths([]string{dir}, suffixes)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !containsPath(got, template) {
+			t.Errorf("suffixes %v: expected %s, got %v", suffixes, template, got)
+		}
+	}
+}
+
+// A run with no arguments looks for the suffixed variants too, so a directory
+// holding only a template is processed by a bare shiphoist.
+func TestResolvePaths_DefaultRecognisesSuffix(t *testing.T) {
+	t.Chdir(t.TempDir())
+	writeFile(t, ".", "docker-compose.yml.j2", "")
+
+	got, err := resolvePaths(nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(got) != 0 {
+		t.Errorf("expected nothing without --suffix, got %v", got)
+	}
+
+	got, err = resolvePaths(nil, []string{".j2"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !containsPath(got, "docker-compose.yml.j2") {
+		t.Errorf("expected the template to be found, got %v", got)
+	}
+}
+
+// A suffix must not be able to lift a name that is not a Compose file: the stem
+// is rechecked on the trimmed name, so `docker-compose.j2` is not a Compose file
+// and `deployment.yaml.j2` is not one either.
+func TestIsUpdatableName_SuffixDoesNotWidenTheStem(t *testing.T) {
+	tests := []struct {
+		name   string
+		suffix string
+		path   string
+		want   bool
+	}{
+		{name: "template of a compose file", suffix: ".j2", path: "docker-compose.yml.j2", want: true},
+		{name: "template of a plain compose file", suffix: ".j2", path: "compose.yaml.j2", want: true},
+		{name: "stem without an extension", suffix: ".j2", path: "docker-compose.j2"},
+		{name: "unrelated file", suffix: ".j2", path: "deployment.yaml.j2"},
+		{name: "suffix inside the extension", suffix: ".yaml", path: "deployment.j2.yaml"},
+		{name: "wrong suffix", suffix: ".tpl", path: "docker-compose.yml.j2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isUpdatableName(tt.path, []string{tt.suffix}); got != tt.want {
+				t.Errorf("isUpdatableName(%q, %q) = %v, want %v", tt.path, tt.suffix, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormaliseSuffixes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []string
+		want  []string
+	}{
+		{name: "nothing to do", input: []string{".j2"}, want: []string{".j2"}},
+		{name: "dot is added", input: []string{"j2"}, want: []string{".j2"}},
+		{name: "case is folded", input: []string{".J2"}, want: []string{".j2"}},
+		{name: "whitespace is trimmed", input: []string{"  .j2  "}, want: []string{".j2"}},
+		{name: "blanks are dropped", input: []string{"", "   ", "."}, want: nil},
+		{name: "order is preserved", input: []string{".j2", ".tpl"}, want: []string{".j2", ".tpl"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normaliseSuffixes(tt.input); !slices.Equal(got, tt.want) {
+				t.Errorf("normaliseSuffixes(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// --suffix decides what a *walk* recognises, never what a name the user spelled
+// out means. A literal path and a glob are taken as written, which is what keeps
+// every other name usable without registering a suffix for it.
+func TestResolvePaths_ExplicitPathNeedsNoSuffix(t *testing.T) {
+	dir := t.TempDir()
+	template := writeFile(t, dir, "docker-compose.yml.j2", "")
+
+	for _, suffixes := range [][]string{nil, {".j2"}} {
+		got, err := resolvePaths([]string{template}, suffixes)
+		if err != nil {
+			t.Fatalf("suffixes %v: unexpected error: %v", suffixes, err)
+		}
+
+		if !slices.Equal(got, []string{template}) {
+			t.Errorf("suffixes %v: expected %v, got %v", suffixes, template, got)
+		}
+	}
+
+	// A glob is matched as written too.
+	got, err := resolvePaths([]string{filepath.Join(dir, "*.j2")}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !containsPath(got, template) {
+		t.Errorf("expected the glob to match, got %v", got)
 	}
 }
 

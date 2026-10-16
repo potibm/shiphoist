@@ -419,6 +419,37 @@ A path that matches nothing is refused rather than skipped. A run that silently
 covers none of the files it was asked about is worse than one that fails,
 because nothing in its output would say so.
 
+### Where the file name matters
+
+A path or a glob the user spelled out is taken as written, so a file can be called
+anything at all. The only place a name is interpreted is a **directory walk**,
+because there the name is how the walk decides what to pick up. `isUpdatableName`
+asks whether a walked file is one shiphoist can read, and answers from the name:
+`IsDockerfileName` for one branch, then a Compose stem plus a `.yml`/`.yaml`
+extension.
+
+The stem and the extension are both checked. Testing the stem alone would pick up
+a shell script called `docker-compose.sh`; testing the extension alone would pick
+up every YAML in the tree.
+
+`--suffix` widens the Compose half for generated files. A template keeps its
+Compose name under a suffix — `docker-compose.yml.j2` is an Ansible template for a
+Compose file, and the reference in it is the one the rendered file would carry.
+`isComposeVariant` strips one suffix and rechecks the stem and extension, rather
+than accepting a suffix once and letting it lift an unrelated stem: without the
+recheck, `--suffix .yaml` would qualify `deployment.j2.yaml`, which has no Compose
+name in it at all.
+
+The Dockerfile half needs no flag because `IsDockerfileName` already matches on a
+prefix, so `Dockerfile.j2` qualifies the way `Dockerfile.prod` does. The Compose
+half is checked by suffix instead, because there the stem sits at the front of the
+name and the extension at the back.
+
+Because the flag names the user's files rather than the walk's, a directory
+holding both `docker-compose.yml` and its `.j2` template is processed as both.
+That is deliberate: `--suffix` is an explicit statement about which files are
+yours.
+
 ## Filtering References
 
 An image can be left alone two ways, and they are implemented at different

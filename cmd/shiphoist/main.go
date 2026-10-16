@@ -115,5 +115,7 @@ func registerUpdateFlags(rootCmd *cobra.Command, opts *options) {
 	flags.BoolVarP(&opts.Quiet, "quiet", "q", false, "Suppress the progress bar, the summary and skipped images")
 	flags.StringVar(&opts.Mode, "mode", "", "Limit updates to "+strings.Join(modeNames, ", "))
 	flags.StringArrayVar(&opts.Files, "file", nil, "Add a file, glob pattern or directory to process (repeatable)")
+	flags.StringArrayVar(&opts.Suffixes, "suffix", nil,
+		"Also treat files ending in this as Compose files (repeatable), e.g. .j2")
 	flags.StringVar(&opts.Exclude, "exclude", "", "Skip images whose repository matches this regular expression")
 }

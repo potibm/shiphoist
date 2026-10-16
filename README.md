@@ -97,6 +97,34 @@ A reference shared by two files is **one** registry lookup, not two, and the one
 
 With no arguments at all, shiphoist looks for `docker-compose.yml`, `docker-compose.yaml`, `compose.yml` or `compose.yaml` in the current directory — and only there, so a bare invocation does the obvious thing rather than silently walking the tree. If it finds nothing it fails rather than exiting clean, so a CI job cannot go green after doing no work.
 
+A path you name yourself is read whatever it is called. A directory walk is the only place the name matters, because there a name is how the walk decides what to pick up.
+
+### Templated Compose Files
+
+A Compose file generated from a template keeps its Compose name under a suffix, as in `docker-compose.yml.j2` for an Ansible template. The reference inside is the reference the rendered file would carry, so it is updated exactly the same way.
+
+A walk does not recognise those names by default, because the suffix is what says the file is generated and a walk should not guess. `--suffix` says so, and is repeatable:
+
+```bash
+shiphoist . --suffix .j2          # picks up docker-compose.yml.j2 alongside docker-compose.yml
+shiphoist --suffix .j2            # a bare run in a directory holding only the template
+shiphoist --suffix .j2 --suffix .tpl
+```
+
+A missing dot is fine — `--suffix j2` and `--suffix .j2` are the same. `Dockerfile.j2` needs no flag: it already matches by name.
+
+Because the flag names your files rather than the walk's, a directory holding both `docker-compose.yml` and `docker-compose.yml.j2` is processed as both. If you want only the template, name it:
+
+```bash
+shiphoist docker-compose.yml.j2
+shiphoist '**/*.yml.j2'
+```
+
+Two limits worth knowing, because a template can break either one around shiphoist rather than in it:
+
+- **Variable references are not resolved.** `image: {{ app_image }}` is sent to the registry as an image literally named `{{ app_image }}` and fails, the way `$VAR` does in a Dockerfile. Only literal references are updated.
+- **The file must be valid YAML.** An unquoted `{{ }}` in a value is a YAML syntax error, and the file is then reported as unreadable rather than partially updated.
+
 ### Check a Single Image
 
 Query available update candidates directly from the registry:
