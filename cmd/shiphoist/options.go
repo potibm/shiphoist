@@ -51,6 +51,12 @@ type options struct {
 	// shiphoist sees it, which makes `--file '**/docker-compose.yml'` the way
 	// to pass a recursive pattern a shell would not grow for you.
 	Files []string
+
+	// Suffixes are extra file suffixes that mark a Compose file, from
+	// --suffix. A file named docker-compose.yml.j2 is an Ansible template for
+	// a Compose file, and the reference in it is updated exactly like the
+	// rendered result would be.
+	Suffixes []string
 }
 
 // buildDiscoverer assembles the discovery chain for the run.

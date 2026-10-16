@@ -35,7 +35,7 @@ func runUpdate(d deps, opts options, paths ...string) error {
 		return err
 	}
 
-	resolved, err := resolvePaths(slices.Concat(opts.Files, paths))
+	resolved, err := resolvePaths(slices.Concat(opts.Files, paths), opts.Suffixes)
 	if err != nil {
 		return err
 	}

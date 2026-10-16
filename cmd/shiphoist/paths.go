@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -54,15 +55,15 @@ const doubleStar = "**"
 // The result is deduplicated and ordered by first appearance, so
 // `shiphoist . docker-compose.yml` processes `docker-compose.yml` once, at the
 // position the directory gave it.
-func resolvePaths(args []string) ([]string, error) {
+func resolvePaths(args, suffixes []string) ([]string, error) {
 	if len(args) == 0 {
-		return resolveDefaultPaths()
+		return resolveDefaultPaths(suffixes), nil
 	}
 
 	expanded := make([]string, 0, len(args))
 
 	for _, arg := range args {
-		matches, err := expandArg(arg)
+		matches, err := expandArg(arg, suffixes)
 		if err != nil {
 			return nil, err
 		}
@@ -83,20 +84,47 @@ func resolvePaths(args []string) ([]string, error) {
 // It is deliberately not recursive: `shiphoist` with no arguments should do the
 // obvious thing in the obvious place, and a walk that silently pulls in a
 // hundred files from subdirectories is not that.
-func resolveDefaultPaths() ([]string, error) {
+//
+// A run that names no file finds every candidate that exists, so a directory
+// holding both `docker-compose.yml` and its `.j2` template is processed as
+// both. That is the point of passing --suffix, and it is why the flag is what
+// turns the variants on.
+func resolveDefaultPaths(suffixes []string) []string {
 	var found []string
 
-	for _, name := range defaultFileNames {
+	for _, name := range defaultCandidates(suffixes) {
 		if _, err := os.Stat(name); err == nil {
 			found = append(found, name)
 		}
 	}
 
-	return found, nil
+	return found
+}
+
+// defaultCandidates lists the names a run with no arguments looks for.
+//
+// Each --suffix value contributes a candidate next to every conventional name,
+// so `--suffix .j2` makes a bare shiphoist find `docker-compose.yml.j2` as well
+// as `docker-compose.yml`. The plain names come first, so a directory holding
+// both reports them in the order a reader expects.
+func defaultCandidates(suffixes []string) []string {
+	candidates := slices.Clone(defaultFileNames)
+
+	for _, suffix := range normaliseSuffixes(suffixes) {
+		for _, name := range defaultFileNames {
+			candidates = append(candidates, name+suffix)
+		}
+	}
+
+	return candidates
 }
 
 // expandArg resolves one argument against the filesystem.
-func expandArg(arg string) ([]string, error) {
+//
+// suffixes are only used for a directory: a literal path or a glob is taken as
+// written, so `--suffix` decides what a walk recognises and never what a name
+// the user spelled out means.
+func expandArg(arg string, suffixes []string) ([]string, error) {
 	if hasGlobMagic(arg) {
 		return expandGlob(arg)
 	}
@@ -113,7 +141,7 @@ func expandArg(arg string) ([]string, error) {
 		return []string{arg}, nil
 	}
 
-	return expandDir(arg)
+	return expandDir(arg, suffixes)
 }
 
 // hasGlobMagic reports whether a pattern contains any wildcard.
@@ -249,8 +277,10 @@ func matchSegment(pattern, segment string) bool {
 //
 // Only names that are recognised as a Compose file or a Dockerfile are taken,
 // because anything else in a tree is not something shiphoist knows how to read
-// and a run over it would report nothing rather than fail.
-func expandDir(dir string) ([]string, error) {
+// and a run over it would report nothing rather than fail. suffixes widen what
+// counts as a Compose file, so `--suffix .j2` makes the walk pick up an Ansible
+// template alongside the rendered file.
+func expandDir(dir string, suffixes []string) ([]string, error) {
 	var found []string
 
 	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -262,7 +292,7 @@ func expandDir(dir string) ([]string, error) {
 			return fs.SkipDir
 		}
 
-		if entry.IsDir() || !isUpdatableName(path) {
+		if entry.IsDir() || !isUpdatableName(path, suffixes) {
 			return nil
 		}
 
@@ -280,7 +310,12 @@ func expandDir(dir string) ([]string, error) {
 }
 
 // isUpdatableName reports whether a file is one shiphoist can read.
-func isUpdatableName(path string) bool {
+//
+// suffixes are extra --suffix values marking a file generated from a template. The
+// name under the suffix is still the Compose name, so `docker-compose.yml.j2` is
+// checked as `docker-compose.yml` — the reference in an Ansible template is the
+// same reference the rendered file would carry.
+func isUpdatableName(path string, suffixes []string) bool {
 	if discovery.IsDockerfileName(path) {
 		return true
 	}
@@ -288,7 +323,7 @@ func isUpdatableName(path string) bool {
 	name := strings.ToLower(filepath.Base(path))
 
 	for _, stem := range composeStems {
-		if isComposeVariant(name, stem) {
+		if isComposeVariant(name, stem, suffixes) {
 			return true
 		}
 	}
@@ -297,19 +332,55 @@ func isUpdatableName(path string) bool {
 }
 
 // isComposeVariant reports whether name is a Compose file built on the given
-// stem, either bare or carrying a variant such as `.override` or `.prod`.
-func isComposeVariant(name, stem string) bool {
-	for _, extension := range composeExtension {
-		if name == stem+extension {
-			return true
-		}
+// isComposeVariant reports whether name is a Compose file built on the given
+// stem, either bare or carrying a variant such as `.override` or `.prod`, and with
+// or without one of the --suffix values.
+//
+// The empty suffix stands for the plain name, so one pass covers both cases. The
+// stem is rechecked per suffix rather than accepted once: `docker-compose.yml.j2`
+// qualifies only with the suffix stripped, and `docker-compose.yml` only with it
+// absent, so a suffix must not be able to lift an unrelated stem.
+func isComposeVariant(name, stem string, suffixes []string) bool {
+	for _, suffix := range append([]string{""}, normaliseSuffixes(suffixes)...) {
+		trimmed := strings.TrimSuffix(name, suffix)
 
-		if strings.HasPrefix(name, stem+".") && strings.HasSuffix(name, extension) {
-			return true
+		for _, extension := range composeExtension {
+			if trimmed == stem+extension {
+				return true
+			}
+
+			if strings.HasPrefix(trimmed, stem+".") && strings.HasSuffix(trimmed, extension) {
+				return true
+			}
 		}
 	}
 
 	return false
+}
+
+// normaliseSuffixes makes the --suffix values comparable to a file name.
+//
+// A missing leading dot is added rather than rejected, because `--suffix j2` is
+// as natural to write as `--suffix .j2` and a forgotten dot is not worth an error
+// message. Values are lowercased because the name comparison already is, and a
+// value with nothing after its dot is dropped: a lone dot is the same slip as
+// passing an empty --suffix, and a suffix that can never match anything is not
+// worth carrying.
+func normaliseSuffixes(values []string) []string {
+	normalised := make([]string, 0, len(values))
+
+	for _, value := range values {
+		trimmed := strings.ToLower(strings.TrimSpace(value))
+		trimmed = strings.TrimLeft(trimmed, ".")
+
+		if trimmed == "" {
+			continue
+		}
+
+		normalised = append(normalised, "."+trimmed)
+	}
+
+	return normalised
 }
 
 // dedupe keeps the first occurrence of each path, so a run over the same file
