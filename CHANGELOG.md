@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/potibm/shiphoist/compare/v0.2.0...v0.3.0) (2026-10-16)
+
+
+### Features
+
+* run several files as one run ([#24](https://github.com/potibm/shiphoist/issues/24)) ([d99b0b1](https://github.com/potibm/shiphoist/commit/d99b0b14caad8e148883bd4cafb71e1652a8aaec))
+
+
+### Bug Fixes
+
+* **ui:** size the progress bar to the run, not to the terminal ([#25](https://github.com/potibm/shiphoist/issues/25)) ([f47ea32](https://github.com/potibm/shiphoist/commit/f47ea320e5cbfe1507467723499b6681275aabf3))
+
 ## [0.2.0](https://github.com/potibm/shiphoist/compare/v0.1.4...v0.2.0) (2026-10-15)
 
 
