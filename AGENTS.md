@@ -46,9 +46,10 @@ Pipeline flow: `Discoverer → Fetcher → Prompter → Patcher` (orchestrated b
 ## Documentation & Project Sync
 
 Always keep project documentation aligned with code changes:
-- **`TODO.md`**: Check off completed tasks (`- [x]`) and add newly identified requirements or technical debt before concluding a task.
-- **`DESIGN.md`**: Update when modifying core data structures (`core.ImageUpdate`), interfaces (`Discoverer`, `RegistryFetcher`, etc.), or architectural boundaries.
+- **`TODO.md`**: Check off completed tasks (`- [x]`) and add newly identified requirements or technical debt before concluding a task. Open *features* live in GitHub Issues, not here — link the issue rather than restating it, so the backlog has one source of truth. This file stays the log of what is done and of debt found in passing.
+- **`DESIGN.md`**: Update when modifying core data structures (`core.ImageUpdate`, `core.Report`, `core.Filtered`), interfaces (`Discoverer`, `RegistryFetcher`, etc.), or architectural boundaries.
 - **`README.md`**: Update immediately when flags, CLI commands, default behaviors, or user-facing features change.
+- **GitHub Issues**: Create an issue for a planned feature *before* building it, so the design discussion happens in public and the work is discoverable. Check for an existing issue first — a duplicate ticket is worse than none.
 
 ## Testing
 
