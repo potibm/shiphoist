@@ -18,10 +18,15 @@ const (
 	// label cannot leave the tail of a previous one behind.
 	clearLine = "\r\x1b[2K"
 
-	// minBarWidth is the narrowest bar still worth drawing.
+	// minBarWidth is the narrowest bar drawn, for a run with few lookups.
 	minBarWidth = 10
 
+	// maxBarWidth is the widest bar drawn, however much room the terminal has.
+	maxBarWidth = 20
+
 	// minLabelWidth is the space always reserved for the current image name.
+	// Below it there is no room for a bar and the line falls back to a plain
+	// counter and label.
 	minLabelWidth = 12
 
 	// minWidthForBar is the terminal width below which the bar is dropped
@@ -217,26 +222,41 @@ func (p *Progress) counter() string {
 }
 
 // barLine renders the single updating line. The layout is
-// "[████░░░░] 12/18  ghcr.io/potibm/funkapparat", with the bar dropped when the
-// terminal is too narrow to carry it.
+// "[████████████████████] 12/18  ghcr.io/potibm/funkapparat", with the bar
+// dropped when the terminal is too narrow to carry it.
+//
+// The bar is sized to the run and the label takes what is left, never the other
+// way round. The label is the only part of the line that says *what* is being
+// checked, so a bar that grabs the spare room takes it from the part that
+// matters — and on a wide terminal it would take everything.
 func (p *Progress) barLine() string {
 	counter := p.counter()
 	counterWidth := ansi.StringWidth(counter)
 	chrome := bracketWidth + 2*columnGap + counterWidth
 
-	barWidth := p.width - chrome - minLabelWidth
-	if barWidth < minBarWidth {
+	barWidth := p.barWidth()
+	labelWidth := p.width - chrome - barWidth
+
+	if labelWidth < minLabelWidth {
 		// Too narrow for a bar: fall back to a plain counter and label.
 		return counter + strings.Repeat(" ", columnGap) + clip(p.label, p.width-counterWidth-columnGap)
 	}
 
-	label := clip(p.label, p.width-chrome-barWidth)
-
 	return fmt.Sprintf("[%s]%s%s%s%s",
 		p.bar(barWidth),
 		strings.Repeat(" ", columnGap), counter,
-		strings.Repeat(" ", columnGap), label,
+		strings.Repeat(" ", columnGap), clip(p.label, labelWidth),
 	)
+}
+
+// barWidth sizes the bar to the run, within bounds.
+//
+// It is deliberately independent of the terminal width. One column per distinct
+// lookup keeps the bar honest, so a five-image run is not drawn as a wide bar
+// that moves in lumps, and a large run stops gaining anything once there is a
+// column per lookup to be had.
+func (p *Progress) barWidth() int {
+	return min(max(p.total, minBarWidth), maxBarWidth)
 }
 
 // bar renders the filled and empty portion of the progress bar. The total is

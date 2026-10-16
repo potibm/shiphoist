@@ -114,6 +114,73 @@ func TestProgress_NarrowTerminalDropsTheBar(t *testing.T) {
 	}
 }
 
+// The label is the only part of the line that says *what* is being checked, so
+// it has to survive a normal terminal. Sizing the bar to whatever room was left
+// used to squeeze the name to minLabelWidth columns, which cut every repository
+// path to a stub on an 80-column terminal.
+func TestProgress_LabelIsNotTruncatedOnANormalTerminal(t *testing.T) {
+	for _, width := range []int{80, 100, 120, 200} {
+		out := &bytes.Buffer{}
+		progress := NewProgress(out, 18, ProgressOptions{Interactive: true, Width: width})
+
+		progress.Advance("ghcr.io/potibm/funkapparat")
+		progress.Advance("ghcr.io/potibm/funkapparat")
+		progress.Stop("summary")
+
+		line := firstLine(out.String())
+
+		if strings.Contains(line, ellipsis) {
+			t.Errorf("width %d: label was truncated: %q", width, line)
+		}
+
+		if !strings.Contains(line, "ghcr.io/potibm/funkapparat") {
+			t.Errorf("width %d: expected the full label, got %q", width, line)
+		}
+	}
+}
+
+// A bar that takes the spare room takes it from the label, so it has to stay put
+// as the terminal grows.
+func TestProgress_BarDoesNotGrowWithTheTerminal(t *testing.T) {
+	for _, width := range []int{40, 60, 80, 120, 200, 400} {
+		out := &bytes.Buffer{}
+		progress := NewProgress(out, 30, ProgressOptions{Interactive: true, Width: width})
+
+		progress.Advance("ghcr.io/potibm/billedapparat")
+		progress.Stop("summary")
+
+		got := barWidthOf(firstLine(out.String()))
+
+		if got > maxBarWidth {
+			t.Errorf("width %d: bar is %d columns, expected at most %d", width, got, maxBarWidth)
+		}
+	}
+}
+
+// The bar is sized to the run so that a column tracks a lookup, rather than
+// being a fixed width a short run crawls along.
+func TestProgress_BarMatchesTheRun(t *testing.T) {
+	tests := []struct {
+		name  string
+		total int
+		want  int
+	}{
+		{name: "fewer lookups than the floor", total: 3, want: minBarWidth},
+		{name: "one column per lookup", total: 12, want: 12},
+		{name: "capped", total: 64, want: maxBarWidth},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			progress := NewProgress(&bytes.Buffer{}, tt.total, ProgressOptions{Width: 80})
+
+			if got := progress.barWidth(); got != tt.want {
+				t.Errorf("barWidth() with %d lookups = %d, want %d", tt.total, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProgress_VerboseWritesOneLinePerImage(t *testing.T) {
 	out := &bytes.Buffer{}
 	progress := NewProgress(out, 3, ProgressOptions{Interactive: true, Verbose: true, Width: 80})
@@ -380,6 +447,22 @@ func visibleLines(s string) []string {
 	}
 
 	return lines
+}
+
+// barWidthOf returns the drawn width of the bar in a rendered line, or 0 when
+// the line carries no bar at all.
+func barWidthOf(line string) int {
+	open := strings.IndexByte(line, '[')
+	if open < 0 || !strings.HasPrefix(line, "[") {
+		return 0
+	}
+
+	closing := strings.IndexByte(line[open:], ']')
+	if closing < 0 {
+		return 0
+	}
+
+	return ansi.StringWidth(line[open+1 : open+closing])
 }
 
 var errTest = errStub("boom")
