@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/potibm/shiphoist/compare/v0.3.0...v0.4.0) (2026-10-21)
+
+
+### Features
+
+* **discovery:** read Compose files generated from templates ([#46](https://github.com/potibm/shiphoist/issues/46)) ([da0b548](https://github.com/potibm/shiphoist/commit/da0b548247037a69b6ac39baee3ad6f72935f997))
+
 ## [0.3.0](https://github.com/potibm/shiphoist/compare/v0.2.0...v0.3.0) (2026-10-16)
 
 
