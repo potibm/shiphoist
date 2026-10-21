@@ -450,6 +450,33 @@ holding both `docker-compose.yml` and its `.j2` template is processed as both.
 That is deliberate: `--suffix` is an explicit statement about which files are
 yours.
 
+### Template expressions are masked, not filtered
+
+A Compose file generated from a template is not YAML: `{{ ... }}` in a value, an
+unquoted `${ ... }` from envsubst, a `{% if %}` on a line of its own.
+`ComposeDiscoverer` rewrites those constructs before parsing, in
+`internal/discovery/template.go`. Statements are dropped because they produce no
+value of their own; expressions are replaced by a placeholder that is a valid
+YAML scalar. Placeholders never contain a newline, so the line numbers the parser
+reports still address the original file — the patcher keeps working by line and
+the file is written untouched apart from the image reference.
+
+The mask covers the syntaxes that turn up around Compose files: Jinja2 and
+Ansible, Helm and other Go templates, Liquid, Mustache, Handlebars, envsubst and
+Terraform, ERB and EJS. It is applied to Compose only; the Dockerfile discoverer
+already scans lines and recognises `${VAR}` in `FROM` as a variable reference.
+
+A reference whose own value is a template — `image: {{ app_image }}` or
+`image: ${IMAGE:-ghcr.io/acme/app:latest}` — is **not** looked up. Its repository
+only exists after rendering, so the discoverer skips it with `ReasonTemplated`
+and reports the expression as it appears in the file. Writing a digest into the
+expression would corrupt the template for the next render.
+
+`{% if %}` branches are both kept, because the mask cannot know which branch the
+renderer takes. When the branches define the same YAML key, the parsed file still
+has a duplicate key and stays unreadable; that is a structural template rather
+than a value, and refusing is better than guessing a branch.
+
 ## Filtering References
 
 An image can be left alone two ways, and they are implemented at different

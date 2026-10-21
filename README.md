@@ -120,10 +120,12 @@ shiphoist docker-compose.yml.j2
 shiphoist '**/*.yml.j2'
 ```
 
+Template syntax is masked before the file is parsed, so the template is read the way the rendered file would be: `{{ ... }}`, `${ ... }`, `$VAR`, `{% ... %}`, `{# ... #}` and `<%= ... %>` are understood, and the line numbers still address the original file. The file itself is only written at the image reference, so the expressions stay exactly as written.
+
 Two limits worth knowing, because a template can break either one around shiphoist rather than in it:
 
-- **Variable references are not resolved.** `image: {{ app_image }}` is sent to the registry as an image literally named `{{ app_image }}` and fails, the way `$VAR` does in a Dockerfile. Only literal references are updated.
-- **The file must be valid YAML.** An unquoted `{{ }}` in a value is a YAML syntax error, and the file is then reported as unreadable rather than partially updated.
+- **A templated reference cannot be resolved.** `image: {{ app_image }}` or `image: ${IMAGE:-ghcr.io/acme/app:latest}` names its repository only after rendering, so it is skipped and reported as `templated-reference` instead of being looked up under the literal expression. Only literal references are updated.
+- **Both branches of a conditional stay in place.** A `{% if %}` / `{% else %}` is dropped, not evaluated, so the parser sees both branches. When they define the same YAML key the file is still a duplicate-key error; that is a structural template rather than a value, and shiphoist reports the file as unreadable instead of partially updating it.
 
 ### Check a Single Image
 
