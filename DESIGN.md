@@ -466,6 +466,19 @@ Ansible, Helm and other Go templates, Liquid, Mustache, Handlebars, envsubst and
 Terraform, ERB and EJS. It is applied to Compose only; the Dockerfile discoverer
 already scans lines and recognises `${VAR}` in `FROM` as a variable reference.
 
+**A statement is dropped, whatever engine wrote it.** Jinja2 and Ansible use
+`{% ... %}`, Go templates use `{{ if }}` and `{{ end }}` for the same thing, and
+Handlebars opens a block with `{{#if}}`. A Go template statement has the same
+delimiters as an expression, so it is recognised by the keyword that opens it
+(`if`, `else`, `end`, `range`, `with`, `define`, `block`, `template`,
+`include`). Masked as an expression instead, it would leave a key without a
+value behind and the whole file would be unreadable — a block is structural, so
+it belongs with the other statements, not with the values.
+
+A comment may span several lines. The lines it covered are kept as blank lines,
+because the mask may not take a line away: the parser's line numbers have to
+address the original file.
+
 A reference whose own value is a template — `image: {{ app_image }}` or
 `image: ${IMAGE:-ghcr.io/acme/app:latest}` — is **not** looked up. Its repository
 only exists after rendering, so the discoverer skips it with `ReasonTemplated`
@@ -476,6 +489,12 @@ expression would corrupt the template for the next render.
 renderer takes. When the branches define the same YAML key, the parsed file still
 has a duplicate key and stays unreadable; that is a structural template rather
 than a value, and refusing is better than guessing a branch.
+
+A statement that sits *inline* is a different case: `image: nginx{% if x %}:1.25{% endif %}`
+is read as `nginx:1.25`, because the text around the statement is joined as if
+the branch were taken. That is a guess, and it is the same guess for every
+engine, but a statement on a line of its own — the usual case — never has to be
+guessed at all.
 
 ## Filtering References
 

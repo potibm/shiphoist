@@ -12,6 +12,14 @@ const (
 
 	// ReasonExcluded is a reference matched by --exclude.
 	ReasonExcluded = "excluded"
+
+	// ReasonTemplated is a reference whose value is a template expression.
+	//
+	// The expression is resolved by the template engine before the Compose
+	// file is read, so the repository, tag or digest it produces cannot be
+	// known here. Rewriting a line that only exists after rendering would
+	// corrupt the template, so the reference is reported instead of checked.
+	ReasonTemplated = "templated-reference"
 )
 
 // hasIgnoreDirective reports whether the declaration carries the inline

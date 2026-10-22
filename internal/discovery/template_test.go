@@ -192,6 +192,10 @@ func TestTemplateMask_PreservesLineNumbers(t *testing.T) {
     labels:
       - "a={{ a }}"
 {% endif %}
+{{/*
+  a comment over
+  several lines
+*/}}
 `
 
 	masked := newTemplateMask().mask([]byte(content))
@@ -223,5 +227,192 @@ func TestTemplateMask_Restore(t *testing.T) {
 
 	if restored != `image: ${IMAGE:-ghcr.io/acme/app:latest}` {
 		t.Errorf("unexpected restored text %q", restored)
+	}
+}
+
+// A Go template statement has the same delimiters as an expression, so it has
+// to be recognised by the keyword that opens it. Masked as an expression it
+// leaves a key without a value behind, and the whole file becomes unreadable.
+func TestComposeDiscoverer_DropsGoTemplateStatements(t *testing.T) {
+	content := `services:
+  {{- if .Values.app.enabled }}
+  app:
+    image: nginx:1.25.0
+  {{- end }}
+  {{- range .Values.extras }}
+  extra:
+    image: redis:7.2
+  {{- end }}
+  db:
+    image: postgres:16
+`
+
+	got := discover(t, content)
+
+	expected := []core.ImageUpdate{
+		{LineNumber: 4, ServiceName: "app", ImageName: "nginx", OldTag: "1.25.0", OriginalString: "nginx:1.25.0"},
+		{LineNumber: 8, ServiceName: "extra", ImageName: "redis", OldTag: "7.2", OriginalString: "redis:7.2"},
+		{LineNumber: 11, ServiceName: "db", ImageName: "postgres", OldTag: "16", OriginalString: "postgres:16"},
+	}
+
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d updates, got %d: %+v", len(expected), len(got), got)
+	}
+
+	for i, exp := range expected {
+		assertUpdate(t, i, got[i], exp)
+	}
+}
+
+// A Handlebars block opens with a hash and closes with a slash. Both are
+// statements, so both are dropped.
+func TestComposeDiscoverer_DropsHandlebarsBlocks(t *testing.T) {
+	content := `services:
+  {{#if enabled}}
+  app:
+    image: nginx:1.25.0
+  {{/if}}
+  db:
+    image: postgres:16
+`
+
+	got := discover(t, content)
+
+	expected := []core.ImageUpdate{
+		{LineNumber: 4, ServiceName: "app", ImageName: "nginx", OldTag: "1.25.0", OriginalString: "nginx:1.25.0"},
+		{LineNumber: 7, ServiceName: "db", ImageName: "postgres", OldTag: "16", OriginalString: "postgres:16"},
+	}
+
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d updates, got %d: %+v", len(expected), len(got), got)
+	}
+
+	for i, exp := range expected {
+		assertUpdate(t, i, got[i], exp)
+	}
+}
+
+// A comment may span several lines. Left in the text it is not YAML, and the
+// file is reported as unreadable instead of being read around it.
+func TestComposeDiscoverer_DropsMultilineComments(t *testing.T) {
+	content := `services:
+  app:
+    image: nginx:1.25.0
+{{/*
+  a Go template comment
+  over several lines
+*/}}
+{# a Jinja comment
+   over several lines #}
+  db:
+    image: postgres:16
+`
+
+	got := discover(t, content)
+
+	expected := []core.ImageUpdate{
+		{LineNumber: 3, ServiceName: "app", ImageName: "nginx", OldTag: "1.25.0", OriginalString: "nginx:1.25.0"},
+		{LineNumber: 11, ServiceName: "db", ImageName: "postgres", OldTag: "16", OriginalString: "postgres:16"},
+	}
+
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d updates, got %d: %+v", len(expected), len(got), got)
+	}
+
+	for i, exp := range expected {
+		assertUpdate(t, i, got[i], exp)
+	}
+}
+
+// The directive is read from the source text, so it still applies in a file
+// that carries template syntax.
+func TestComposeDiscoverer_IgnoresDirectiveInTemplate(t *testing.T) {
+	content := `services:
+  app:
+    image: nginx:1.25.0 # shiphoist-ignore
+    environment:
+      DOMAIN: {{ app_domain }}
+  db:
+    image: postgres:16
+`
+
+	discoverer := &ComposeDiscoverer{}
+
+	updates, err := discoverer.Discover(context.Background(), writeTempFile(t, "docker-compose.yml.j2", content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := services(t, updates); !reflect.DeepEqual(got, []string{"db"}) {
+		t.Errorf("expected only db, got %v", got)
+	}
+
+	filtered := discoverer.Filtered()
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 filtered reference, got %+v", filtered)
+	}
+
+	if filtered[0].Reason != ReasonIgnoreDirective {
+		t.Errorf("expected reason %q, got %q", ReasonIgnoreDirective, filtered[0].Reason)
+	}
+}
+
+// A doubled dollar is how Compose writes a literal dollar. It is not a
+// variable, so the reference next to it stays a plain one.
+func TestComposeDiscoverer_TreatsEscapedDollarAsLiteral(t *testing.T) {
+	content := `services:
+  app:
+    image: nginx:1.25.0
+    command: "$$VAR --flag"
+    environment:
+      - PASSWORD=pa$$word
+`
+
+	got := discover(t, content)
+
+	expected := []core.ImageUpdate{
+		{LineNumber: 3, ServiceName: "app", ImageName: "nginx", OldTag: "1.25.0", OriginalString: "nginx:1.25.0"},
+	}
+
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d updates, got %d: %+v", len(expected), len(got), got)
+	}
+
+	assertUpdate(t, 0, got[0], expected[0])
+}
+
+// Restoring has to put every expression back, and a placeholder that ends in
+// a digit must not swallow the placeholder next to it.
+func TestTemplateMask_RestoreKeepsPlaceholdersApart(t *testing.T) {
+	mask := newTemplateMask()
+
+	masked := string(mask.mask([]byte("image: {{ a }} {{ b }}")))
+
+	restored := mask.restore(masked)
+
+	if restored != "image: {{ a }} {{ b }}" {
+		t.Errorf("unexpected restored text %q", restored)
+	}
+}
+
+// A value that only looks like a placeholder is not one, so it is not reported
+// as a templated reference.
+func TestTemplateMask_HasTemplate(t *testing.T) {
+	mask := newTemplateMask()
+
+	masked := string(mask.mask([]byte("image: nginx:1.25.0")))
+
+	if hasTemplate(masked) {
+		t.Errorf("expected no template in %q", masked)
+	}
+
+	masked = string(mask.mask([]byte("image: {{ app_image }}")))
+
+	if !hasTemplate(masked) {
+		t.Errorf("expected a template in %q", masked)
+	}
+
+	if hasTemplate("__SHIPHOIST_TEMPLATE_") {
+		t.Error("expected the bare prefix not to count as a template")
 	}
 }
