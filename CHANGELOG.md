@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/potibm/shiphoist/compare/v0.4.0...v0.4.1) (2026-10-22)
+
+
+### Bug Fixes
+
+* **discovery:** drop template statements of every engine ([#48](https://github.com/potibm/shiphoist/issues/48)) ([c6f2371](https://github.com/potibm/shiphoist/commit/c6f2371719899233f95648498278d888a52b78ef))
+
 ## [0.4.0](https://github.com/potibm/shiphoist/compare/v0.3.0...v0.4.0) (2026-10-21)
 
 
