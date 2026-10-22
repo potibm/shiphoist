@@ -62,7 +62,8 @@ type Filtered struct {
 	// image at line 12, so the path is what tells them apart.
 	FilePath string `json:"file_path"`
 
-	// Image is the repository that was skipped.
+	// Image is the repository that was skipped. A reference whose repository
+	// only exists after rendering is reported as it appears in the file.
 	Image string `json:"image"`
 
 	// LineNumber is where the reference is declared.

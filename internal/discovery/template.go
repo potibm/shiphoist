@@ -6,14 +6,6 @@ import (
 	"strings"
 )
 
-// ReasonTemplated is a reference whose value is a template expression.
-//
-// The expression is resolved by the template engine before the Compose file is
-// read, so the repository, tag or digest it produces cannot be known here.
-// Rewriting a line that only exists after rendering would corrupt the template,
-// so the reference is reported instead of checked.
-const ReasonTemplated = "templated-reference"
-
 // templatePlaceholderPrefix marks a value that came from a template expression.
 //
 // The marker is a valid YAML scalar and contains none of the characters the
@@ -21,10 +13,18 @@ const ReasonTemplated = "templated-reference"
 // output.
 const templatePlaceholderPrefix = "__SHIPHOIST_TEMPLATE_"
 
-// replacementsPerTemplate is how many strings one placeholder contributes to
-// the replacer that restores it: the placeholder and the expression it stands
-// for.
-const replacementsPerTemplate = 2
+// templatePlaceholderPattern matches a placeholder the mask wrote.
+//
+// The digits are matched greedily, so a placeholder is always recognised whole:
+// restoring one can never eat the first half of the next, and the order the
+// placeholders are restored in does not matter.
+var templatePlaceholderPattern = regexp.MustCompile(templatePlaceholderPrefix + `\d+_\d+__`)
+
+// goTemplateStatementPattern matches a Go template statement.
+//
+// A Go template statement has the same delimiters as an expression, so the
+// keyword that opens it is what tells the two apart.
+const goTemplateStatementPattern = `\{\{-?\s*(?:if|else|end|range|with|define|block|template|include)\b.*?\}\}`
 
 // templateStatements are constructs that produce no value of their own.
 //
@@ -32,11 +32,18 @@ const replacementsPerTemplate = 2
 // service, a label or a network is a line of its own, and a blank line is valid
 // wherever a statement can appear. Statements that sit inline are removed the
 // same way, which joins the text around them as if the branch were taken.
+//
+// A comment is dropped for the same reason and may span several lines. A Go
+// template statement has the same delimiters as an expression, so it is
+// recognised by the keyword that opens it; a Handlebars block opens with `#`
+// and closes with `/`.
 var templateStatements = []*regexp.Regexp{
-	regexp.MustCompile(`\{#.*?#\}`),             // Jinja2 and Liquid comment
-	regexp.MustCompile(`\{\{-?/\*.*?\*/-?\}\}`), // Go template comment
-	regexp.MustCompile(`\{\{!.*?\}\}`),          // Handlebars comment
-	regexp.MustCompile(`\{%.*?%\}`),             // Jinja2 and Go template statement
+	regexp.MustCompile(`(?s)\{#.*?#\}`),             // Jinja2 and Liquid comment
+	regexp.MustCompile(`(?s)\{\{-?/\*.*?\*/-?\}\}`), // Go template comment
+	regexp.MustCompile(`\{\{!.*?\}\}`),              // Handlebars comment
+	regexp.MustCompile(`\{%.*?%\}`),                 // Jinja2 statement
+	regexp.MustCompile(goTemplateStatementPattern),  // Go template statement
+	regexp.MustCompile(`\{\{[#/^].*?\}\}`),          // Handlebars block
 }
 
 // templateExpressions are constructs that produce a value. Each is replaced by
@@ -75,7 +82,7 @@ func (m *templateMask) mask(data []byte) []byte {
 	text := string(data)
 
 	for _, statement := range templateStatements {
-		text = statement.ReplaceAllString(text, "")
+		text = dropStatement(text, statement)
 	}
 
 	for patternIndex, expression := range templateExpressions {
@@ -94,23 +101,35 @@ func (m *templateMask) mask(data []byte) []byte {
 	return []byte(text)
 }
 
+// dropStatement removes a statement from the text and keeps the line count.
+//
+// A statement is usually a line of its own, but a comment may span several.
+// The parser reports line numbers, so the newlines the statement contained are
+// put back as blank lines rather than taken away with it.
+func dropStatement(text string, statement *regexp.Regexp) string {
+	return statement.ReplaceAllStringFunc(text, func(match string) string {
+		return strings.Repeat("\n", strings.Count(match, "\n"))
+	})
+}
+
 // hasTemplate reports whether a parsed value came from a template expression.
 func hasTemplate(value string) bool {
-	return strings.Contains(value, templatePlaceholderPrefix)
+	return templatePlaceholderPattern.MatchString(value)
 }
 
 // restore puts the original expressions back, so a reported reference reads the
 // way it does in the file.
 func (m *templateMask) restore(value string) string {
-	replacements := make([]string, 0, len(m.originals)*replacementsPerTemplate)
-
-	for placeholder, original := range m.originals {
-		replacements = append(replacements, placeholder, original)
-	}
-
-	if len(replacements) == 0 {
+	if len(m.originals) == 0 {
 		return value
 	}
 
-	return strings.NewReplacer(replacements...).Replace(value)
+	return templatePlaceholderPattern.ReplaceAllStringFunc(value, func(placeholder string) string {
+		original, ok := m.originals[placeholder]
+		if !ok {
+			return placeholder
+		}
+
+		return original
+	})
 }
