@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/potibm/shiphoist/compare/v0.4.1...v0.5.0) (2026-10-29)
+
+
+### Features
+
+* **release:** add Homebrew cask, Docker v2 images and nFPM packages ([#50](https://github.com/potibm/shiphoist/issues/50)) ([2e9b159](https://github.com/potibm/shiphoist/commit/2e9b15915b3499600f96825525f2f4d4e9100545))
+
 ## [0.4.1](https://github.com/potibm/shiphoist/compare/v0.4.0...v0.4.1) (2026-10-22)
 
 
