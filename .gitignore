@@ -3,8 +3,7 @@ TODO.md
 coverage.out
 dist/
 docker-compose.yml
-test/*.log
-test/docker-compose.yml*
+test/
 oss-licenses/
 # Local agent plan files
 .opencode/
