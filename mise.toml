@@ -1,8 +1,8 @@
 [tools]
 go = "1.27"
-goreleaser = "2.18.2"
+goreleaser = "2.19.0"
 golangci-lint = "latest"
-syft = "1.52.0"
+syft = "1.55.0"
 "go:github.com/google/go-licenses" = "1.6.0"
 "go:github.com/icholy/gomajor" = "0.15.0"
 
