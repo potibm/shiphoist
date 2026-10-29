@@ -28,6 +28,11 @@ jobs:
         with:
           version: latest
 
+      - name: Linting (hadolint)
+        uses: hadolint/hadolint-action@v3.5.0
+        with:
+          dockerfile: Dockerfile.goreleaser
+
       - name: Test & Coverage
         run: go test -v -short -coverprofile=coverage.out ./...
 
