@@ -40,3 +40,45 @@ release:
 
 sboms:
   - artifacts: archive
+
+homebrew_casks:
+  - name: shiphoist
+    repository:
+      owner: potibm
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/potibm/shiphoist"
+    description: "CLI tool for updating Docker image tags and SHA256 digests"
+    binaries:
+      - shiphoist
+    hooks:
+      post:
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/shiphoist"]
+          end
+
+dockers_v2:
+  - images:
+      - "ghcr.io/potibm/shiphoist"
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .IsNightly }}latest{{ end }}"
+    dockerfile: Dockerfile.goreleaser
+    platforms:
+      - linux/amd64
+      - linux/arm64
+
+nfpms:
+  - id: packages
+    package_name: shiphoist
+    vendor: potibm
+    homepage: "https://github.com/potibm/shiphoist"
+    maintainer: "poti <poti@kaoz.org>"
+    description: "CLI tool for updating Docker image tags and SHA256 digests"
+    license: "MIT"
+    formats:
+      - deb
+      - rpm
+      - apk
