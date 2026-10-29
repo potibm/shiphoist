@@ -64,7 +64,7 @@ dockers_v2:
       - "ghcr.io/potibm/shiphoist"
     tags:
       - "{{ .Version }}"
-      - "latest"
+      - "{{ if not .IsNightly }}latest{{ end }}"
     dockerfile: Dockerfile.goreleaser
     platforms:
       - linux/amd64
