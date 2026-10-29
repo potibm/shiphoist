@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/potibm/shiphoist/compare/v0.5.0...v0.5.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **release:** trigger 0.5.1 release to verify docker publish pipeline ([91d9ec9](https://github.com/potibm/shiphoist/commit/91d9ec9ebe9df0f39c4969c8065e99a9f2c2dfd2))
+
 ## [0.5.0](https://github.com/potibm/shiphoist/compare/v0.4.1...v0.5.0) (2026-10-29)
 
 
