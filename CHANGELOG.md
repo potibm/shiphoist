@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/potibm/shiphoist/compare/v0.5.1...v0.5.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* **release:** pass HOMEBREW_TAP_GITHUB_TOKEN to GoReleaser ([#54](https://github.com/potibm/shiphoist/issues/54)) ([cc7ede1](https://github.com/potibm/shiphoist/commit/cc7ede1b5a294b051457b25d838b54cd99b96f45))
+
 ## [0.5.1](https://github.com/potibm/shiphoist/compare/v0.5.0...v0.5.1) (2026-10-29)
 
 
